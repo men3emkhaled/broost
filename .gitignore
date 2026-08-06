@@ -120,3 +120,28 @@ ENV2/
 # Project specific
 pos_app.log
 backups/
+.env
+.env.*
+!.env.example
+frontend-dist/
+webapp/data/
+*.db
+*.db-shm
+*.db-wal
+*.exe
+!BroostPOS.spec
+!BroostWebServer.spec
+build/
+dist/
+release_*/
+.last_backup_date
+webapp/static/images/*.png
+0504233.eps
+0504233.jpg
+chicken-mascot-logo.zip
+# Agent Assistant Skills & Context
+.antigravity/
+.gemini/
+CLAUDE.md
+GEMINI.md
+.github/copilot-instructions.md

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#202024">
+  <title>Broost — لوحة الأدمن</title>
+  <link rel="icon" href="/logo.ico">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260805-6">
+</head>
+<body>
+  <div class="admin-shell">
+    <header class="topbar">
+      <a class="brand" href="/admin"><img src="/logo.ico" alt="شعار Broost"><span><strong>BROOST ADMIN</strong><small>إدارة المطعم والأونلاين</small></span></a>
+      <div class="top-actions"><span class="badge" id="adminConnection">جاري الاتصال...</span><a class="btn" href="/">فتح موقع الطلب</a><button class="btn btn-danger" id="logoutBtn">خروج</button></div>
+    </header>
+
+    <div class="admin-layout">
+      <aside class="admin-sidebar">
+        <nav class="admin-nav" aria-label="أقسام لوحة الأدمن">
+          <button class="btn active" data-admin-view="orders">الطلبات</button>
+          <button class="btn" data-admin-view="customers">العملاء</button>
+          <button class="btn" data-admin-view="areas">القرى والتوصيل</button>
+          <button class="btn" data-admin-view="menu">المنيو</button>
+          <button class="btn" data-admin-view="reviews">آراء العملاء</button>
+          <button class="btn" data-admin-view="settings">إعدادات الطلب</button>
+        </nav>
+      </aside>
+
+      <main class="admin-main">
+        <section class="admin-view" data-view="orders">
+          <div class="section-head"><div><h2>كل الطلبات</h2><p>طلبات المطعم والموقع في مكان واحد.</p></div><button class="btn" id="refreshOrdersBtn">تحديث</button></div>
+          <div class="kpi-grid">
+            <div class="card kpi"><span class="muted">عدد الطلبات</span><strong id="kpiOrders">0</strong><small>حسب الفترة المختارة</small></div>
+            <div class="card kpi"><span class="muted">طلبات الموقع</span><strong id="kpiOnline">0</strong><small>دليفري واستلام</small></div>
+            <div class="card kpi"><span class="muted">مبيعات المنتجات</span><strong id="kpiRevenue">0 ج</strong><small>بدون رسوم التوصيل</small></div>
+          </div>
+
+          <div class="filter-bar">
+            <input class="input" type="date" id="ordersFrom" aria-label="من تاريخ">
+            <input class="input" type="date" id="ordersTo" aria-label="إلى تاريخ">
+            <select class="input" id="ordersSource" aria-label="مصدر الطلب"><option value="">كل المصادر</option><option value="ONLINE">الموقع</option><option value="POS">المطعم</option></select>
+            <button class="btn btn-primary" id="applyOrderFilters">عرض</button>
+          </div>
+
+          <div class="orders-board">
+            <section><div class="column-title"><h3>جديد</h3><span class="badge" id="newCount">0</span></div><div id="newOrders"></div></section>
+            <section><div class="column-title"><h3>جاري التجهيز</h3><span class="badge" id="preparingCount">0</span></div><div id="preparingOrders"></div></section>
+            <section><div class="column-title"><h3>جاهز أو خرج</h3><span class="badge" id="readyCount">0</span></div><div id="readyOrders"></div></section>
+          </div>
+
+          <div class="section-head"><div><h3>المكتمل والملغي</h3><p>آخر الطلبات بنفس الفلاتر.</p></div></div>
+          <div class="card table-wrap">
+            <table><thead><tr><th>الرقم</th><th>المصدر</th><th>العميل</th><th>الدفع</th><th>المنتجات</th><th>التوصيل</th><th>الحالة</th><th>الوقت</th></tr></thead><tbody id="closedOrdersTable"></tbody></table>
+          </div>
+        </section>
+
+        <section class="admin-view" data-view="customers" hidden>
+          <div class="section-head"><div><h2>العملاء</h2><p>المؤشر مبني على سجل الطلبات والملاحظات المسجلة يدويًا، ولا يرفض أي طلب تلقائيًا.</p></div></div>
+          <div class="filter-bar customer-search-bar">
+            <input class="input" id="customerSearchInput" placeholder="ابحث بالاسم أو رقم الموبايل">
+            <button class="btn btn-primary" id="customerSearchBtn">بحث</button>
+          </div>
+          <div class="card table-wrap">
+            <table><thead><tr><th>العميل</th><th>الموبايل</th><th>الحالة</th><th>طلبات مكتملة</th><th>ملاحظات مفتوحة</th><th>النقاط</th><th>آخر طلب</th><th></th></tr></thead><tbody id="customersTable"></tbody></table>
+          </div>
+        </section>
+
+        <section class="admin-view" data-view="areas" hidden>
+          <div class="section-head"><div><h2>القرى وأسعار التوصيل</h2><p>العميل يختار قرية من القرى المتاحة إجباريًا.</p></div><button class="btn btn-primary" id="addAreaBtn">إضافة قرية</button></div>
+          <div class="card table-wrap"><table><thead><tr><th>القرية</th><th>رسوم التوصيل</th><th>الترتيب</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="areasTable"></tbody></table></div>
+        </section>
+
+        <section class="admin-view" data-view="menu" hidden>
+          <div class="section-head"><div><h2>إدارة المنيو والعروض</h2><p>أي تعديل يتزامن مع برنامج الكاشير والموقع.</p></div><div class="inline-actions"><button class="btn" id="addCategoryBtn">إضافة قسم</button><button class="btn" id="addMenuItemBtn">إضافة صنف</button><button class="btn btn-primary" id="addOfferBtn">إضافة عرض</button></div></div>
+          <div class="checkout-layout">
+            <section class="card panel"><h3>الأقسام</h3><div id="adminCategories" class="cart-lines"></div></section>
+            <section class="card panel"><h3>الأصناف</h3><div class="field"><label for="menuCategoryFilter">عرض قسم</label><select class="input" id="menuCategoryFilter"></select></div><div id="adminMenuItems" class="cart-lines" style="margin-top:12px"></div></section>
+          </div>
+          <section class="card panel" style="margin-top:16px"><div class="section-head compact-head"><div><h3>العروض والباقات</h3><p>خصم على صنف واحد، كمية من نفس الصنف، أو أصناف مختلفة معًا.</p></div></div><div id="adminOffers" class="cart-lines"></div></section>
+        </section>
+
+        <section class="admin-view" data-view="reviews" hidden>
+          <div class="section-head"><div><h2>آراء العملاء</h2><p>أضف آراء حقيقية فقط؛ القسم لا يظهر في الموقع إذا كانت القائمة فارغة.</p></div><button class="btn btn-primary" id="addReviewBtn">إضافة رأي</button></div>
+          <div class="card table-wrap"><table><thead><tr><th>الاسم</th><th>الرأي</th><th>التقييم</th><th>الحالة</th><th>الترتيب</th><th>الإجراءات</th></tr></thead><tbody id="reviewsTable"></tbody></table></div>
+        </section>
+
+        <section class="admin-view" data-view="settings" hidden>
+          <div class="section-head"><div><h2>إعدادات الطلب والفرع</h2><p>بيانات الطلب والتواصل التي تظهر للعميل في الموقع.</p></div></div>
+          <section class="card panel settings-panel">
+            <div class="form-grid">
+              <div class="field"><label for="restaurantName">اسم المطعم</label><input class="input" id="restaurantName"></div>
+              <div class="field"><label for="walletNumberAdmin">رقم المحفظة</label><input class="input" id="walletNumberAdmin" dir="ltr"></div>
+              <div class="field field-full"><label for="businessHoursAdmin">مواعيد العمل</label><input class="input" id="businessHoursAdmin" placeholder="مثال: يوميًا من 12 ظهرًا إلى 1 صباحًا"></div>
+              <div class="field field-full"><label for="branchAddressAdmin">عنوان الفرع</label><textarea class="input" id="branchAddressAdmin" rows="2"></textarea></div>
+              <div class="field"><label for="contactPhoneAdmin">رقم الاتصال</label><input class="input" id="contactPhoneAdmin" dir="ltr"></div>
+              <div class="field"><label for="whatsappNumberAdmin">رقم واتساب</label><input class="input" id="whatsappNumberAdmin" dir="ltr"></div>
+              <div class="field"><label for="mapUrlAdmin">رابط الخريطة</label><input class="input" id="mapUrlAdmin" dir="ltr" placeholder="https://..."></div>
+              <div class="field"><label for="facebookUrlAdmin">رابط فيسبوك</label><input class="input" id="facebookUrlAdmin" dir="ltr" placeholder="https://..."></div>
+              <label class="option-row field-full"><span><strong>استقبال طلبات جديدة</strong><small class="muted">إيقافه يمنع إنشاء طلبات جديدة على الموقع.</small></span><input type="checkbox" id="orderingEnabled"></label>
+            </div>
+            <button class="btn btn-primary" id="saveSettingsBtn">حفظ الإعدادات</button>
+            <p class="error-text" id="settingsMessage"></p>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="overlay" id="loginOverlay">
+    <section class="modal" style="max-width:430px">
+      <header class="modal-head"><h2>دخول لوحة الأدمن</h2></header>
+      <div class="modal-body"><div class="field"><label for="adminPassword">كلمة المرور</label><input class="input" type="password" inputmode="numeric" id="adminPassword" autocomplete="current-password"></div><p class="error-text" id="loginError"></p></div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="loginBtn">دخول</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="areaModal" hidden>
+    <section class="modal" style="max-width:520px">
+      <header class="modal-head"><h2 id="areaModalTitle">إضافة قرية</h2><button class="btn btn-small" data-close-overlay="areaModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="field field-full"><label for="areaNameInput">اسم القرية</label><input class="input" id="areaNameInput"></div>
+        <div class="field"><label for="areaFeeInput">رسوم التوصيل</label><input class="input" id="areaFeeInput" type="number" min="0" step="1"></div>
+        <div class="field"><label for="areaSortInput">الترتيب</label><input class="input" id="areaSortInput" type="number" min="0" step="1"></div>
+        <label class="option-row field-full"><span>متاحة للطلب</span><input type="checkbox" id="areaActiveInput" checked></label>
+        <p class="error-text field-full" id="areaError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveAreaBtn">حفظ القرية</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="categoryModal" hidden>
+    <section class="modal" style="max-width:520px">
+      <header class="modal-head"><h2 id="categoryModalTitle">إضافة قسم</h2><button class="btn btn-small" data-close-overlay="categoryModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="field field-full"><label for="categoryNameInput">اسم القسم</label><input class="input" id="categoryNameInput"></div>
+        <div class="field"><label for="categorySortInput">الترتيب</label><input class="input" id="categorySortInput" type="number" min="0" step="1"></div>
+        <label class="option-row"><span>ظاهر ومتاح</span><input type="checkbox" id="categoryActiveInput" checked></label>
+        <p class="error-text field-full" id="categoryError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveCategoryBtn">حفظ القسم</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="menuItemModal" hidden>
+    <section class="modal">
+      <header class="modal-head"><h2 id="menuItemModalTitle">إضافة صنف</h2><button class="btn btn-small" data-close-overlay="menuItemModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="field"><label for="itemNameInput">اسم الصنف</label><input class="input" id="itemNameInput"></div>
+        <div class="field"><label for="itemCategoryInput">القسم</label><select class="input" id="itemCategoryInput"></select></div>
+        <div class="field"><label for="itemPriceInput">السعر الأساسي</label><input class="input" id="itemPriceInput" type="number" min="0" step="0.5"></div>
+        <label class="option-row"><span>متاح للبيع</span><input type="checkbox" id="itemAvailableInput" checked></label>
+        <label class="option-row"><span>من الأكثر طلبًا</span><input type="checkbox" id="itemPopularInput"></label>
+        <div class="field field-full"><label for="itemSizesInput">الأحجام — كل سطر: الاسم | فرق السعر</label><textarea class="input" id="itemSizesInput" rows="3" placeholder="فرنساوي | 10"></textarea></div>
+        <div class="field field-full"><label for="itemExtrasInput">الإضافات — كل سطر: الاسم | السعر</label><textarea class="input" id="itemExtrasInput" rows="4" placeholder="صوص إضافي | 20"></textarea></div>
+        <p class="error-text field-full" id="menuItemError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveMenuItemBtn">حفظ الصنف</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="offerModal" hidden>
+    <section class="modal">
+      <header class="modal-head"><h2 id="offerModalTitle">إضافة عرض</h2><button class="btn btn-small" data-close-overlay="offerModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="field"><label for="offerNameInput">اسم العرض</label><input class="input" id="offerNameInput" placeholder="مثال: عرض البرجر المزدوج"></div>
+        <div class="field"><label for="offerPriceInput">سعر العرض</label><input class="input" id="offerPriceInput" type="number" min="0" step="0.5"></div>
+        <label class="option-row field-full"><span>العرض متاح للطلب الآن</span><input type="checkbox" id="offerActiveInput" checked></label>
+        <div class="field field-full"><div class="section-head compact-head"><div><label>مكونات العرض وكمياتها</label><small class="muted">يمكن اختيار نفس الصنف مرة واحدة ورفع كميته.</small></div><button class="btn btn-small" id="addOfferComponentBtn" type="button">+ مكوّن</button></div><div id="offerComponents" class="offer-component-list"></div></div>
+        <div class="notice field-full"><strong id="offerRegularPrice">السعر الأصلي: 0 ج</strong><span class="muted"> — لازم سعر العرض يكون أقل منه.</span></div>
+        <p class="error-text field-full" id="offerError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveOfferBtn">حفظ ونشر العرض</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="reviewModal" hidden>
+    <section class="modal" style="max-width:620px">
+      <header class="modal-head"><h2 id="reviewModalTitle">إضافة رأي حقيقي</h2><button class="btn btn-small" data-close-overlay="reviewModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="field"><label for="reviewCustomerName">اسم العميل</label><input class="input" id="reviewCustomerName"></div>
+        <div class="field"><label for="reviewRating">التقييم</label><select class="input" id="reviewRating"><option value="5">5 نجوم</option><option value="4">4 نجوم</option><option value="3">3 نجوم</option><option value="2">نجمتان</option><option value="1">نجمة</option></select></div>
+        <div class="field field-full"><label for="reviewText">نص الرأي</label><textarea class="input" id="reviewText" rows="4"></textarea></div>
+        <div class="field"><label for="reviewSort">الترتيب</label><input class="input" id="reviewSort" type="number" min="0" step="1"></div>
+        <label class="option-row"><span>ظاهر في الموقع</span><input type="checkbox" id="reviewVisible" checked></label>
+        <p class="error-text field-full" id="reviewError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveReviewBtn">حفظ الرأي</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="customerIssueModal" hidden>
+    <section class="modal" style="max-width:560px">
+      <header class="modal-head"><div><h2>تسجيل ملاحظة على العميل</h2><p class="muted" id="issueCustomerLabel"></p></div><button class="btn btn-small" data-close-overlay="customerIssueModal">إغلاق</button></header>
+      <div class="modal-body form-grid">
+        <div class="notice notice-warning field-full">سجل واقعة مؤكدة فقط. الملاحظة تظهر كتنبـيه للاتصال بالعميل ولا تلغي الطلب تلقائيًا.</div>
+        <div class="field field-full"><label for="issueType">نوع الملاحظة</label><select class="input" id="issueType"><option value="NO_SHOW">لم يستلم الطلب</option><option value="WRONG_ADDRESS">عنوان غير صحيح</option><option value="UNREACHABLE">تعذر الوصول إليه</option><option value="INVALID_WALLET_PROOF">إثبات محفظة غير صحيح</option><option value="OTHER">أخرى</option></select></div>
+        <div class="field field-full"><label for="issueNote">التفاصيل</label><textarea class="input" id="issueNote" rows="3" placeholder="اكتب الواقعة باختصار"></textarea></div>
+        <p class="error-text field-full" id="issueError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveIssueBtn">حفظ الملاحظة</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="customerProfileModal" hidden>
+    <section class="modal customer-profile-modal">
+      <header class="modal-head"><div><h2 id="profileCustomerName">بيانات العميل</h2><p class="muted" id="profileCustomerPhone"></p></div><button class="btn btn-small" data-close-overlay="customerProfileModal">إغلاق</button></header>
+      <div class="modal-body">
+        <div id="profileReliability"></div>
+        <div class="section-head compact-head"><div><h3>الملاحظات المسجلة</h3><p>يمكن إنهاء التنبيه أو حذف الملاحظة إذا سُجلت بالخطأ.</p></div></div>
+        <div class="cart-lines" id="profileIssues"></div>
+        <div class="section-head compact-head"><div><h3>آخر الطلبات</h3></div></div>
+        <div class="card table-wrap"><table><thead><tr><th>الطلب</th><th>الحالة</th><th>الإجمالي</th><th>التاريخ</th></tr></thead><tbody id="profileOrders"></tbody></table></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="overlay" id="proofModal" hidden>
+    <section class="modal">
+      <header class="modal-head"><h2>إثبات التحويل</h2><button class="btn btn-small" data-close-overlay="proofModal">إغلاق</button></header>
+      <div class="modal-body"><img class="thumb-proof" id="proofImage" alt="سكرين شوت التحويل"></div>
+    </section>
+  </div>
+
+  <script src="/assets/config.js"></script>
+  <script src="/assets/admin.js?v=20260806-1" defer></script>
+</body>
+</html>

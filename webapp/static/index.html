@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#c91432">
+  <title>Broost — اطلب أونلاين</title>
+  <link rel="icon" href="/logo.ico">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260805-7">
+</head>
+<body class="customer-site">
+  <div class="app-shell">
+    <div class="points-strip"><strong>اطلب النهارده… وكل أوردر بيقرّبك من أوردر علينا</strong><span>كل 10 جنيه = نقطة، وعند 100 نقطة طلبك لحد 150 جنيه مجانًا.</span></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="الصفحة الرئيسية">
+        <img src="/logo.ico" alt="شعار Broost">
+        <span><strong id="brandName">BROOST</strong><small>اطلب أونلاين</small></span>
+      </a>
+      <nav class="site-nav" aria-label="التنقل الرئيسي">
+        <a href="#menuSection">المنيو</a>
+        <a href="#deliveryLookup">التوصيل</a>
+        <a href="#howItWorks">طريقة الطلب</a>
+        <a href="#faqSection">أسئلة شائعة</a>
+      </nav>
+      <div class="top-actions">
+        <button class="btn btn-soft login-btn" id="loginBtn">تسجيل الدخول</button>
+        <button class="btn btn-soft resume-order-btn" id="resumeOrderBtn" hidden><span aria-hidden="true">↻</span> متابعة طلبي</button>
+        <button class="btn btn-primary header-order-btn" id="headerOrderBtn">اطلب الآن</button>
+      </div>
+    </header>
+
+    <main id="menuView">
+      <div class="container">
+        <section class="hero">
+          <div class="hero-copy">
+            <span class="badge" id="storeStatus">جاري تحميل حالة المطعم...</span>
+            <span class="hero-kicker">أوردر واضح من أوله لآخره</span>
+            <h1>بروست سخن، وطلبك ما يضيعش في الزحمة.</h1>
+            <p>اختار الوجبة، اعرف حساب التوصيل، وتابع طلبك لحد ما يستلم أو يوصل.</p>
+            <div class="hero-actions">
+              <button class="btn btn-light" id="heroOrderBtn">شوف المنيو</button>
+              <a class="text-link" href="#deliveryLookup">بنوصل لقريتك؟</a>
+            </div>
+            <div class="hero-facts" aria-label="طرق الطلب والدفع">
+              <span>دليفري أو استلام</span><span>نقدي أو محفظة</span><span>كل 10 جنيه = نقطة</span>
+            </div>
+          </div>
+          <div class="hero-visual" aria-hidden="true"><img src="/assets/images/hero-food-v1.webp" alt=""></div>
+        </section>
+
+        <section class="delivery-lookup" id="deliveryLookup">
+          <div class="lookup-copy">
+            <span class="eyebrow">قبل ما تختار</span>
+            <h2>اعرف رسوم التوصيل لقريتك</h2>
+            <p>كل قرية لها سعرها، والإجمالي النهائي يظهر قبل تأكيد الطلب.</p>
+          </div>
+          <div class="lookup-control">
+            <label for="deliveryLookupSelect">اختار القرية</label>
+            <select class="input" id="deliveryLookupSelect"><option value="">جاري تحميل القرى...</option></select>
+            <div class="lookup-result" id="deliveryLookupResult">اختار قريتك لمعرفة الرسوم</div>
+          </div>
+        </section>
+
+        <div class="section-head" id="menuSection">
+          <div><span class="eyebrow">منيو بروست</span><h2>اختار اللي نفسك فيه</h2><p>اضغط على الصنف لاختيار الحجم والإضافات.</p></div>
+          <span class="badge" id="menuCount">0 صنف</span>
+        </div>
+        <nav class="category-bar" id="categoryBar" aria-label="أقسام المنيو"></nav>
+        <section class="product-grid" id="productGrid" aria-live="polite"></section>
+
+        <section class="content-section steps-section" id="howItWorks">
+          <div class="section-head">
+            <div><span class="eyebrow">من غير لخبطة</span><h2>طلبك في 3 خطوات</h2><p>كل خطوة محفوظة وواضحة قدامك.</p></div>
+          </div>
+          <div class="steps-grid">
+            <article class="step-card"><span class="step-number">01</span><h3>اختار طلبك</h3><p>حدد الحجم والإضافات، وعدّل الكمية من السلة.</p></article>
+            <article class="step-card"><span class="step-number">02</span><h3>حدد الاستلام</h3><p>دليفري باختيار القرية والعنوان، أو استلام من المطعم.</p></article>
+            <article class="step-card"><span class="step-number">03</span><h3>تابع الأوردر</h3><p>ادفع نقدي أو بالمحفظة، وارجع لنفس الطلب في أي وقت.</p></article>
+          </div>
+        </section>
+
+        <section class="content-section reviews-section" id="reviewsSection" hidden>
+          <div class="section-head">
+            <div><span class="eyebrow">من كلام زبايننا</span><h2>تجارب حقيقية</h2><p>لا نعرض هنا إلا الآراء التي يضيفها المطعم بنفسه.</p></div>
+          </div>
+          <div class="reviews-grid" id="reviewsGrid"></div>
+        </section>
+
+        <section class="content-section store-section" id="storeInfoSection">
+          <div class="store-card store-card-main">
+            <span class="eyebrow">معلومات سريعة</span>
+            <h2>عايز تكلمنا أو تيجي تستلم؟</h2>
+            <p id="storeInfoHint">بيانات الفرع وطرق التواصل تظهر هنا بمجرد إضافتها من لوحة الأدمن.</p>
+            <div class="store-links" id="storeLinks"></div>
+          </div>
+          <div class="store-details">
+            <div class="info-row" id="hoursInfo" hidden><span>مواعيد العمل</span><strong id="businessHours"></strong></div>
+            <div class="info-row" id="addressInfo" hidden><span>عنوان الفرع</span><strong id="branchAddress"></strong></div>
+            <div class="info-row"><span>طرق الاستلام</span><strong>دليفري أو استلام من المطعم</strong></div>
+            <div class="info-row"><span>طرق الدفع</span><strong id="paymentMethodsInfo">نقدي</strong></div>
+          </div>
+        </section>
+
+        <section class="content-section faq-section" id="faqSection">
+          <div class="section-head"><div><span class="eyebrow">مهم قبل الطلب</span><h2>أسئلة بتتكرر</h2></div></div>
+          <div class="faq-list">
+            <details><summary>لو خرجت أحول بالمحفظة، الطلب هيروح؟</summary><p>لا. الطلب يتسجل أولًا، ورابط المتابعة يفضل محفوظًا على نفس الجهاز لتقدر ترجع وترفع سكرين شوت التحويل.</p></details>
+            <details><summary>رسوم التوصيل بتتحسب إزاي؟</summary><p>السعر مختلف حسب القرية. اختار قريتك وسيظهر سعر التوصيل والإجمالي قبل تأكيد الطلب.</p></details>
+            <details><summary>ينفع أستلم من المطعم؟</summary><p>نعم. اختار «استلام من المطعم» ولن تضاف رسوم توصيل.</p></details>
+            <details><summary>أعرف حالة الطلب منين؟</summary><p>بعد التأكيد تظهر صفحة متابعة الطلب، ويمكن فتحها مرة أخرى من زر «متابعة طلبي».</p></details>
+            <details><summary>نقط بروست بتتحسب إزاي؟</summary><p>كل 10 جنيه مدفوعة بعد اكتمال الطلب تمنحك نقطة. عند 100 نقطة تقدر تطلب منتجات بقيمة 150 جنيه أو أقل مجانًا، وتدفع رسوم التوصيل فقط إن وجدت.</p></details>
+          </div>
+        </section>
+      </div>
+      <footer class="site-footer">
+        <div class="container footer-inner">
+          <div class="brand footer-brand"><img src="/logo.ico" alt=""><span><strong id="footerBrandName">BROOST</strong><small>اطلبها على مزاجك</small></span></div>
+          <p>الأسعار ورسوم التوصيل الظاهرة وقت الطلب هي المعتمدة.</p>
+        </div>
+      </footer>
+    </main>
+
+    <main id="checkoutView" class="checkout-page" hidden>
+      <div class="container">
+        <div class="section-head">
+          <div><span class="eyebrow">خطوة أخيرة</span><h2>إتمام الطلب</h2><p>حدد طريقة الاستلام والدفع وراجع طلبك.</p></div>
+          <button class="btn back-btn" id="backToMenuBtn">← الرجوع للمنيو</button>
+        </div>
+        <div class="checkout-layout">
+          <section class="card panel">
+            <h3 class="step-title"><span>1</span> طريقة الاستلام</h3>
+            <div class="segmented" id="fulfillmentChoice">
+              <button class="btn active" data-fulfillment="DELIVERY">توصيل للعنوان</button>
+              <button class="btn" data-fulfillment="PICKUP">استلام من المطعم</button>
+            </div>
+
+            <h3 class="step-title customer-step"><span>2</span> بيانات الطلب</h3>
+            <div class="form-grid" style="margin-top:16px">
+              <div class="field"><label for="customerName">الاسم *</label><input class="input" id="customerName" autocomplete="name"></div>
+              <div class="field"><label for="customerPhone">رقم الموبايل *</label><input class="input" id="customerPhone" inputmode="tel" autocomplete="tel"></div>
+              <div class="field field-full loyalty-checkout" id="loyaltyCheckout">
+                <div><span class="eyebrow">نقط بروست</span><strong id="loyaltyBalanceText">اكتب رقم الموبايل لمعرفة رصيدك</strong><small id="loyaltyHint">كل 10 جنيه مدفوعة = نقطة، و100 نقطة = أوردر مجاني حتى 150 جنيه.</small></div>
+                <label class="reward-option" id="rewardOption" hidden><input type="checkbox" id="redeemReward"><span><strong>استخدم 100 نقطة</strong><small>المنتجات علينا حتى 150 جنيه، ورسوم التوصيل فقط إن وجدت.</small></span></label>
+              </div>
+              <div class="field delivery-only"><label for="areaSelect">القرية *</label><select class="input" id="areaSelect"></select></div>
+              <div class="field field-full delivery-only"><label for="customerAddress">العنوان بالتفصيل *</label><textarea class="input" id="customerAddress" rows="3" placeholder="الشارع، رقم البيت، وأقرب علامة مميزة"></textarea></div>
+              <div class="field field-full"><label for="orderNotes">ملاحظات الطلب</label><textarea class="input" id="orderNotes" rows="2" placeholder="مثال: بدون مايونيز"></textarea></div>
+            </div>
+
+            <h3 class="step-title payment-step"><span>3</span> طريقة الدفع</h3>
+            <div class="segmented" id="paymentChoice">
+              <button class="btn active" data-payment="CASH">نقدي عند الاستلام</button>
+              <button class="btn" data-payment="WALLET" id="walletChoiceBtn">محفظة وتحويل يدوي</button>
+            </div>
+            <p class="error-text" id="checkoutError"></p>
+          </section>
+
+          <aside class="card panel sticky-summary">
+            <h3 class="summary-title">ملخص طلبك</h3>
+            <div class="points-progress-card" id="cartPointsProgress">
+              <div><strong id="cartPointsTitle">الأوردر ده هيكسبك نقاط</strong><span id="cartPointsHint">سجّل برقمك علشان نضيفها لرصيدك.</span></div>
+              <div class="points-progress-track" role="progressbar" aria-label="التقدم نحو مكافأة 100 نقطة" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="pointsProgressTrack"><span id="pointsProgressBar"></span></div>
+            </div>
+            <div class="cart-lines" id="checkoutCart"></div>
+            <div class="summary-row"><span>المنتجات</span><strong id="checkoutSubtotal">0 جنيه</strong></div>
+            <div class="summary-row reward-discount-row" id="checkoutDiscountRow" hidden><span>مكافأة 100 نقطة</span><strong id="checkoutDiscount">− 0 جنيه</strong></div>
+            <div class="summary-row"><span>رسوم التوصيل</span><strong id="checkoutDelivery">اختر القرية</strong></div>
+            <div class="summary-row summary-total"><span>الإجمالي</span><strong id="checkoutTotal">0 جنيه</strong></div>
+            <button class="btn btn-primary btn-block checkout-submit" id="submitOrderBtn">تأكيد الطلب</button>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <main id="trackingView" class="checkout-page" hidden>
+      <div class="container">
+        <div class="checkout-layout">
+          <section class="card panel">
+            <div class="tracking-head">
+              <div class="tracking-brand-mark"><img src="/logo.ico" alt=""></div>
+              <div>
+                <div class="status-line"><span class="badge badge-brand" id="trackNumber"></span><span class="badge" id="trackPayment"></span></div>
+                <h2 id="trackTitle">تم استلام طلبك</h2>
+                <p class="muted" id="trackDescription"></p>
+              </div>
+            </div>
+            <div class="timeline" id="orderTimeline"></div>
+            <div class="loyalty-order-note" id="trackLoyalty"></div>
+
+            <div class="wallet-panel" id="walletPanel" hidden>
+              <h3>تحويل المحفظة</h3>
+              <p>حوّل المبلغ الظاهر ثم ارفع سكرين شوت التحويل. طلبك محفوظ ويمكنك الرجوع للصفحة في أي وقت.</p>
+              <div class="summary-row"><span>رقم المحفظة</span><span class="wallet-number" id="walletNumber"></span></div>
+              <div class="summary-row"><span>المبلغ المطلوب</span><strong id="walletAmount"></strong></div>
+              <button class="btn btn-soft btn-block" id="copyWalletBtn">نسخ الرقم والمبلغ</button>
+              <div class="form-grid" style="margin-top:14px">
+                <div class="field"><label for="transferSuffix">آخر 4 أرقام من رقم المحفظة المحول منها</label><input class="input" id="transferSuffix" inputmode="numeric" maxlength="4"></div>
+                <div class="field"><label for="proofFile">سكرين شوت التحويل *</label><input class="input" type="file" id="proofFile" accept="image/jpeg,image/png,image/webp"></div>
+              </div>
+              <button class="btn btn-primary btn-block" id="uploadProofBtn">رفع إثبات التحويل</button>
+              <p class="error-text" id="proofError"></p>
+            </div>
+          </section>
+
+          <aside class="card panel sticky-summary">
+            <h3 class="summary-title">تفاصيل الحساب</h3>
+            <div class="cart-lines" id="trackingItems"></div>
+            <div class="summary-row"><span>المنتجات</span><strong id="trackSubtotal"></strong></div>
+            <div class="summary-row reward-discount-row" id="trackDiscountRow" hidden><span>مكافأة النقاط</span><strong id="trackDiscount"></strong></div>
+            <div class="summary-row"><span>رسوم التوصيل</span><strong id="trackDelivery"></strong></div>
+            <div class="summary-row summary-total"><span>الإجمالي</span><strong id="trackTotal"></strong></div>
+            <button class="btn btn-danger btn-block" id="cancelOrderBtn" hidden>إلغاء الطلب</button>
+            <p class="error-text" id="cancelOrderError"></p>
+            <button class="btn btn-block" id="newOrderBtn">طلب جديد</button>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <div class="cart-dock" id="cartDock" hidden>
+      <div class="cart-dock-copy"><span class="cart-count" id="cartDockCount">0 صنف</span><strong id="cartDockTotal">0 جنيه + رسوم التوصيل</strong></div>
+      <button class="btn" id="openCheckoutBtn">عرض السلة <span aria-hidden="true">←</span></button>
+    </div>
+  </div>
+
+  <div class="overlay" id="loginModal" hidden>
+    <section class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
+      <header class="modal-head"><div><span class="eyebrow">نقط بروست</span><h2 id="loginModalTitle">ادخل برقم موبايلك</h2><p class="muted">هنرجّع اسمك وعنوانك ورصيد نقاطك تلقائيًا، وتقدر تعدّل البيانات قبل الطلب.</p></div><button class="modal-close simple-close" id="closeLoginModal" aria-label="إغلاق">×</button></header>
+      <div class="modal-body">
+        <div class="field"><label for="loginPhone">رقم الموبايل</label><input class="input" id="loginPhone" inputmode="tel" autocomplete="tel" placeholder="01xxxxxxxxx" dir="ltr"></div>
+        <div class="login-points-preview" id="loginPointsPreview" hidden></div>
+        <p class="error-text" id="loginError"></p>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="loginSubmitBtn">دخول وعرض نقاطي</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="itemModal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="itemModalTitle">
+      <div class="item-modal-cover"><img id="itemModalImage" src="" alt=""><button class="modal-close" id="closeItemModal" aria-label="إغلاق">×</button></div>
+      <header class="modal-head"><h2 id="itemModalTitle"></h2></header>
+      <div class="modal-body">
+        <div class="option-list" id="sizeOptions"></div>
+        <div class="option-list" id="extraOptions"></div>
+        <label class="option-row"><span><strong>حار</strong></span><input type="checkbox" id="spicyOption"></label>
+        <div class="option-row"><strong>الكمية</strong><div class="qty"><button id="modalMinus">−</button><span id="modalQty">1</span><button id="modalPlus">+</button></div></div>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary btn-block" id="addItemBtn">إضافة للسلة</button></footer>
+    </section>
+  </div>
+
+  <script src="/assets/config.js"></script>
+  <script src="/assets/customer.js?v=20260806-2" defer></script>
+</body>
+</html>
