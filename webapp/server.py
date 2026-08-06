@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import io
 import json
 import os
 import re
@@ -19,7 +20,14 @@ from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Literal
 
+from dotenv import load_dotenv
+
+if os.getenv("BROOST_LOAD_DOTENV", "1") != "0":
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
 import httpx
+import cloudinary.uploader
+from cloudinary.exceptions import Error as CloudinaryError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -49,7 +57,7 @@ DATA_DIR = Path(os.getenv("BROOST_WEB_DATA_DIR", str(DEFAULT_DATA_DIR)))
 DB_PATH = DATA_DIR / "broost_web.db"
 PROOFS_DIR = DATA_DIR / "payment_proofs"
 MAX_PROOF_BYTES = 6 * 1024 * 1024
-IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "").strip()
+CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 LOYALTY_REWARD_POINTS = 100
 LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
@@ -331,6 +339,8 @@ def init_web_db() -> None:
             conn.execute("ALTER TABLE orders ADD COLUMN proof_url TEXT")
         if "proof_delete_url" not in order_columns:
             conn.execute("ALTER TABLE orders ADD COLUMN proof_delete_url TEXT")
+        if "proof_storage_id" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN proof_storage_id TEXT")
         menu_item_columns = table_columns(conn, "menu_items")
         if "is_daily_offer" not in menu_item_columns:
             conn.execute("ALTER TABLE menu_items ADD COLUMN is_daily_offer INTEGER NOT NULL DEFAULT 0")
@@ -935,6 +945,7 @@ def order_to_dict(conn: sqlite3.Connection, order_row: sqlite3.Row) -> dict[str,
     data.pop("proof_filename", None)
     data.pop("proof_url", None)
     data.pop("proof_delete_url", None)
+    data.pop("proof_storage_id", None)
     return data
 
 
@@ -958,8 +969,8 @@ def validate_production_config() -> None:
     missing: list[str] = []
     if not USING_POSTGRES:
         missing.append("DATABASE_URL")
-    if not IMGBB_API_KEY:
-        missing.append("IMGBB_API_KEY")
+    if not CLOUDINARY_URL:
+        missing.append("CLOUDINARY_URL")
     if os.getenv("BROOST_ADMIN_PASSWORD", "9999") == "9999":
         missing.append("BROOST_ADMIN_PASSWORD")
     if os.getenv("BROOST_SYNC_KEY", "broost-local-sync") == "broost-local-sync":
@@ -1008,7 +1019,7 @@ def health() -> dict[str, str]:
         "status": "ok",
         "time": utc_now(),
         "database": "postgresql" if USING_POSTGRES else "sqlite",
-        "proof_storage": "imgbb" if IMGBB_API_KEY else "local",
+        "proof_storage": "cloudinary" if CLOUDINARY_URL else "local",
     }
 
 
@@ -1365,23 +1376,22 @@ def cancel_public_order(resume_token: str) -> dict[str, Any]:
 
 def store_payment_proof(raw: bytes, filename: str) -> tuple[str | None, str | None]:
     """Store a payment proof remotely in production and locally in development."""
-    if IMGBB_API_KEY:
+    if CLOUDINARY_URL:
         try:
-            response = httpx.post(
-                "https://api.imgbb.com/1/upload",
-                params={"key": IMGBB_API_KEY},
-                data={
-                    "image": base64.b64encode(raw).decode("ascii"),
-                    "name": Path(filename).stem[:80],
-                },
-                timeout=35.0,
+            result = cloudinary.uploader.upload(
+                io.BytesIO(raw),
+                resource_type="image",
+                folder="cashier-system/payment-proofs",
+                public_id=Path(filename).stem[:80],
+                overwrite=False,
+                unique_filename=False,
             )
-            response.raise_for_status()
-            payload = response.json()
-            if not payload.get("success") or not payload.get("data", {}).get("url"):
-                raise ValueError("ImgBB returned no image URL")
-            return str(payload["data"]["url"]), str(payload["data"].get("delete_url") or "")
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            proof_url = str(result.get("secure_url") or "")
+            storage_id = str(result.get("public_id") or "")
+            if not proof_url or not storage_id:
+                raise ValueError("Cloudinary returned incomplete upload data")
+            return proof_url, storage_id
+        except (CloudinaryError, ValueError, KeyError) as exc:
             raise HTTPException(
                 status_code=502,
                 detail="تعذر رفع صورة التحويل حاليًا؛ حاول مرة أخرى بعد قليل",
@@ -1463,20 +1473,20 @@ def upload_payment_proof(resume_token: str, payload: ProofInput) -> dict[str, An
         if row["payment_status"] not in ("AWAITING_PAYMENT", "REJECTED"):
             raise HTTPException(status_code=409, detail="لا يمكن رفع إثبات في حالة الدفع الحالية")
 
-        proof_url, proof_delete_url = store_payment_proof(raw, filename)
+        proof_url, proof_storage_id = store_payment_proof(raw, filename)
 
         now = utc_now()
         conn.execute(
             """
             UPDATE orders
             SET proof_filename=?, proof_original_name=?, proof_mime_type=?,
-                proof_url=?, proof_delete_url=?, transfer_phone_suffix=?,
+                proof_url=?, proof_storage_id=?, transfer_phone_suffix=?,
                 payment_status='PROOF_UPLOADED', updated_at=?
             WHERE id=?
             """,
             (
                 filename, Path(payload.filename).name, payload.mime_type,
-                proof_url, proof_delete_url, transfer_suffix, now, row["id"],
+                proof_url, proof_storage_id, transfer_suffix, now, row["id"],
             ),
         )
         emit_event(conn, row["id"], "PAYMENT_PROOF_UPLOADED", {"sha256": digest})

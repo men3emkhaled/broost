@@ -12,7 +12,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if os.getenv("BROOST_LOAD_DOTENV", "1") != "0":
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USING_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 

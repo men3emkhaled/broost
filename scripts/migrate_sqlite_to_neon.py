@@ -10,10 +10,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if os.getenv("BROOST_LOAD_DOTENV", "1") != "0":
+    load_dotenv(ROOT / ".env", override=False)
 
 
 TABLES = [
@@ -87,16 +90,16 @@ def main() -> int:
             "SELECT id, proof_filename FROM orders "
             "WHERE proof_filename IS NOT NULL AND proof_filename!=''"
         ).fetchall()
-        if proof_rows and not server.IMGBB_API_KEY:
-            raise RuntimeError("IMGBB_API_KEY is required to migrate existing payment proofs.")
+        if proof_rows and not server.CLOUDINARY_URL:
+            raise RuntimeError("CLOUDINARY_URL is required to migrate existing payment proofs.")
         for proof in proof_rows:
             proof_path = args.sqlite_path.parent / "payment_proofs" / proof["proof_filename"]
             if not proof_path.is_file():
                 raise RuntimeError(f"Missing payment proof: {proof_path}")
-            url, delete_url = server.store_payment_proof(
+            url, storage_id = server.store_payment_proof(
                 proof_path.read_bytes(), proof["proof_filename"]
             )
-            remote_proofs[int(proof["id"])] = (url or "", delete_url or "")
+            remote_proofs[int(proof["id"])] = (url or "", storage_id or "")
 
         totals: dict[str, int] = {}
         with server.db_connection() as target:
@@ -109,7 +112,7 @@ def main() -> int:
                 columns = [column for column in source_cols if column in target_cols]
                 if table == "orders":
                     columns.extend(
-                        column for column in ("proof_url", "proof_delete_url")
+                        column for column in ("proof_url", "proof_storage_id")
                         if column in target_cols and column not in columns
                     )
                 rows = source.execute(f"SELECT * FROM {table}").fetchall()
@@ -135,7 +138,7 @@ def main() -> int:
                     for column in columns:
                         if column == "proof_url":
                             item.append(remote_proofs.get(int(row["id"]), (None, None))[0])
-                        elif column == "proof_delete_url":
+                        elif column == "proof_storage_id":
                             item.append(remote_proofs.get(int(row["id"]), (None, None))[1])
                         else:
                             item.append(row[column])
@@ -155,7 +158,7 @@ def main() -> int:
         for table in TABLES:
             print(f"  {table}: {totals.get(table, 0)}")
         if remote_proofs:
-            print(f"  payment proofs uploaded to ImgBB: {len(remote_proofs)}")
+            print(f"  payment proofs uploaded to Cloudinary: {len(remote_proofs)}")
         return 0
     finally:
         source.close()
