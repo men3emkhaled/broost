@@ -77,7 +77,16 @@ class PostgresConnection:
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> PostgresCursor:
         try:
             cursor = self._connection.cursor()
-            cursor.execute(_postgres_sql(sql), tuple(params or ()))
+            translated_sql = _postgres_sql(sql)
+            bound_params = tuple(params) if params is not None else ()
+            # Psycopg parses percent signs as client-side placeholders whenever
+            # a parameters argument is supplied, even when that argument is an
+            # empty tuple. Execute parameterless SQL without a second argument
+            # so literal LIKE patterns such as '%Z' remain valid PostgreSQL.
+            if bound_params:
+                cursor.execute(translated_sql, bound_params)
+            else:
+                cursor.execute(translated_sql)
             return PostgresCursor(self._connection, cursor)
         except self._psycopg.Error as exc:
             self._raise(exc)
