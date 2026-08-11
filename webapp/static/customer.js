@@ -828,25 +828,31 @@ async function resumeOrder() {
   }
 }
 
-function customerOrderStatus(order) {
+function customerOrderPresentation(order) {
   const status = order.status === "ACCEPTED" ? "PREPARING" : order.status;
-  return {
-    NEW: "تم إرسال الطلب",
-    PREPARING: "جاري التجهيز",
-    READY: "جاهز للاستلام",
-    DISPATCHED: "خرج للتوصيل",
-    COMPLETED: "تم التسليم",
-    CANCELLED: "ملغي",
-  }[status] || status;
+  if (status === "COMPLETED") return { label: "تم التسليم", badgeClass: "badge-success" };
+  if (status === "CANCELLED") return { label: "مرفوض", badgeClass: "badge-danger" };
+  return { label: "جاري", badgeClass: "badge-brand" };
+}
+
+function renderCustomerOrdersLoading() {
+  $("#customerOrdersList").innerHTML = `
+    <div class="customer-orders-loading" role="status" aria-live="polite">
+      <span class="customer-orders-spinner" aria-hidden="true"></span>
+      <strong>جاري تحميل طلباتك...</strong>
+    </div>`;
 }
 
 function renderCustomerOrders() {
   const list = $("#customerOrdersList");
-  list.innerHTML = state.orders.length ? state.orders.map((order) => `
-    <button class="customer-order-card" data-open-order="${escapeHtml(order.resume_token)}">
-      <span class="customer-order-main"><strong>${escapeHtml(order.public_number)}</strong><small>${new Date(order.created_at).toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" })}</small></span>
-      <span class="customer-order-meta"><span class="badge ${order.status === "CANCELLED" ? "badge-danger" : order.status === "COMPLETED" ? "badge-success" : "badge-brand"}">${customerOrderStatus(order)}</span><strong>${money(order.total)}</strong></span>
-    </button>`).join("") : `<div class="empty-state">لسه مفيش طلبات مسجلة بالرقم ده.</div>`;
+  list.innerHTML = state.orders.length ? state.orders.map((order) => {
+    const presentation = customerOrderPresentation(order);
+    return `
+      <button class="customer-order-card" data-open-order="${escapeHtml(order.resume_token)}">
+        <span class="customer-order-main"><strong>${escapeHtml(order.public_number)}</strong><small>${new Date(order.created_at).toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" })}</small></span>
+        <span class="customer-order-meta"><span class="badge ${presentation.badgeClass}">${presentation.label}</span><strong>${money(order.total)}</strong></span>
+      </button>`;
+  }).join("") : `<div class="empty-state">لسه مفيش طلبات مسجلة بالرقم ده.</div>`;
 }
 
 async function loadCustomerOrders(openModal = false) {
@@ -856,6 +862,10 @@ async function loadCustomerOrders(openModal = false) {
     return;
   }
   $("#ordersError").textContent = "";
+  if (openModal) {
+    $("#ordersModal").hidden = false;
+    renderCustomerOrdersLoading();
+  }
   try {
     const result = await api(`/api/customer/orders?phone=${encodeURIComponent(state.loggedPhone)}`);
     state.orders = result.orders || [];
@@ -863,10 +873,9 @@ async function loadCustomerOrders(openModal = false) {
     if (state.accountLoyalty) state.loyalty = state.accountLoyalty;
     renderLoginState();
     renderCustomerOrders();
-    if (openModal) $("#ordersModal").hidden = false;
   } catch (error) {
+    $("#customerOrdersList").innerHTML = `<div class="empty-state">تعذر تحميل الطلبات.</div>`;
     $("#ordersError").textContent = error.message;
-    if (openModal) $("#ordersModal").hidden = false;
   }
 }
 
