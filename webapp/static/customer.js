@@ -376,7 +376,6 @@ async function loadStore() {
     const selectedLookupArea = $("#deliveryLookupSelect")?.value || "";
     state.store = await api("/api/store");
     $("#brandName").textContent = state.store.restaurant_name || "BROOST";
-    $("#footerBrandName").textContent = state.store.restaurant_name || "BROOST";
     $("#storeStatus").textContent = state.store.ordering_enabled ? "● نستقبل طلبات الآن" : "الطلبات متوقفة مؤقتًا";
     $("#storeStatus").className = `badge ${state.store.ordering_enabled ? "badge-success" : "badge-danger"}`;
     $("#storeClosedBanner").hidden = state.store.ordering_enabled;
