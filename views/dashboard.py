@@ -36,6 +36,7 @@ from dialogs.receipt import ReceiptSimDialog
 from dialogs.order_edit import OrderEditDialog
 from dialogs.online_order import OnlineOrderAlertDialog, CustomerCancelledOrderAlertDialog
 from dialogs.daily_offers import DailyOffersDialog
+from dialogs.customers import CustomersAdminDialog
 from core.online_sync import OnlineSyncManager
 
 
@@ -729,11 +730,13 @@ class MainPOSDashboard(QMainWindow):
         btn_close_shift.clicked.connect(self.close_shift_and_drawer)
         header_layout.addWidget(btn_close_shift)
         
-        # User & Settings Profile icons far-right
-        btn_user_profile = QPushButton("👤", self.header_bar)
-        btn_user_profile.setFixedSize(header_control_h, header_control_h)
-        btn_user_profile.setStyleSheet("QPushButton { background-color: #ffffff; color: #27272a; border: 1px solid #dedbd7; border-radius: 10px; font-size: 16px; padding: 0px; } QPushButton:hover { background-color: #fff1f2; border-color: #e7a4b5; }")
-        header_layout.addWidget(btn_user_profile)
+        # Customer search and controls use the former unused profile slot.
+        self.btn_customers = QPushButton("عملاء", self.header_bar)
+        self.btn_customers.setFixedSize(74 if self.is_small_screen else 104, header_control_h)
+        self.btn_customers.setToolTip("بحث وإدارة العملاء")
+        self.btn_customers.setStyleSheet(f"QPushButton {{ background-color: #ffffff; color: #27272a; border: 1px solid #dedbd7; border-radius: 10px; padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }} QPushButton:hover {{ background-color: #fff1f2; border-color: #e7a4b5; }}")
+        self.btn_customers.clicked.connect(self.open_customers_management)
+        header_layout.addWidget(self.btn_customers)
         
         btn_settings = QPushButton("⚙️", self.header_bar)
         btn_settings.setFixedSize(header_control_h, header_control_h)
@@ -3396,6 +3399,7 @@ class MainPOSDashboard(QMainWindow):
                 c_lyt.addWidget(lbl_online)
 
                 trust_labels = {
+                    "BLOCKED": ("محظور", "#991b1b", "#fee2e2"),
                     "RELIABLE": ("موثوق", "#166534", "#dcfce7"),
                     "REGULAR": ("منتظم", "#1d4ed8", "#dbeafe"),
                     "NEEDS_CONFIRMATION": ("يحتاج تأكيد", "#92400e", "#fef3c7"),
@@ -4319,6 +4323,11 @@ class MainPOSDashboard(QMainWindow):
 
     def open_drivers_management(self):
         dlg = DriversAdminDialog(self)
+        dlg.exec()
+        self.load_pending_delivery_orders()
+
+    def open_customers_management(self):
+        dlg = CustomersAdminDialog(self.online_sync, self)
         dlg.exec()
         self.load_pending_delivery_orders()
 

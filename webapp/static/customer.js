@@ -350,18 +350,18 @@ function renderCartPointsProgress() {
   let progress = 0;
 
   if (!state.loyalty) {
-    title.textContent = `الأوردر ده هيكسبك ${orderPoints} نقطة`;
-    hint.textContent = "سجّل دخولك برقم الموبايل علشان النقاط تتضاف لرصيدك.";
+    title.textContent = `بعد استلام الطلب هتكسب ${orderPoints} نقطة`;
+    hint.textContent = "دي نقط متوقعة فقط؛ مش بتدخل رصيدك إلا بعد اكتمال الطلب بنجاح.";
     progress = Math.min(100, orderPoints);
   } else {
     const startingPoints = Math.max(0, Number(state.loyalty.points || 0));
     const afterOrder = startingPoints + orderPoints;
     title.textContent = orderPoints
-      ? `الأوردر ده هيضيف لك ${orderPoints} نقطة`
+      ? `بعد استلام الطلب هيتضاف لك ${orderPoints} نقطة`
       : state.rewardApplied ? "بتستخدم كود مكافأة في الأوردر ده" : "نقطك مستنياك";
     hint.textContent = afterOrder >= 100
-      ? `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة — تقدر تحول 100 نقطة لكود 150 جنيه.`
-      : `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة، وفاضلك ${100 - afterOrder} نقطة على كود جديد.`;
+      ? `الرصيد الحالي ${startingPoints} نقطة. بعد اكتمال الطلب بنجاح هيبقى ${afterOrder} وتقدر تحول 100 نقطة لكود.`
+      : `الرصيد الحالي ${startingPoints} نقطة. بعد اكتمال الطلب بنجاح هيبقى ${afterOrder}، وفاضلك ${100 - afterOrder} نقطة.`;
     progress = Math.min(100, afterOrder);
   }
 
@@ -767,7 +767,7 @@ function renderOrder() {
   else if (order.reward?.code) loyaltyMessages.push(`استخدمت كود ${order.reward.code} وخصمت ${money(order.discount)} من المنتجات.`);
   if (Number(loyalty.points_redeemed || 0) && status !== "CANCELLED") loyaltyMessages.push(`استخدمت ${Number(loyalty.points_redeemed)} نقطة في مكافأة الأوردر.`);
   if (status === "COMPLETED" && Number(loyalty.points_earned || 0)) loyaltyMessages.push(`اتضاف لك ${Number(loyalty.points_earned)} نقطة.`);
-  else if (!["COMPLETED", "CANCELLED"].includes(status) && Number(loyalty.pending_points || 0)) loyaltyMessages.push(`بعد استلام الطلب هتكسب ${Number(loyalty.pending_points)} نقطة.`);
+  else if (!["COMPLETED", "CANCELLED"].includes(status) && Number(loyalty.pending_points || 0)) loyaltyMessages.push(`متوقع تكسب ${Number(loyalty.pending_points)} نقطة بعد اكتمال الطلب بنجاح؛ لم تدخل رصيدك بعد.`);
   if (status === "CANCELLED" && Number(loyalty.points_redeemed || 0)) loyaltyMessages.push(`${Number(loyalty.points_redeemed)} نقطة رجعت كاملة لرصيدك.`);
   loyaltyMessages.push(`رصيدك الحالي ${Number(loyalty.points || 0)} نقطة.`);
   $("#trackLoyalty").innerHTML = `<strong>نقط بروست</strong><span>${loyaltyMessages.join(" ")}</span>`;

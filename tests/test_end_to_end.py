@@ -1168,6 +1168,198 @@ class BroostEndToEndTest(unittest.TestCase):
         self.request(f"/api/orders/{successful_order['resume_token']}/cancel", "POST")
         self.assertEqual(self.request(f"/api/loyalty?phone={phone}")["points"], 100)
 
+    def test_customer_controls_block_orders_and_delete_reconciles_points(self):
+        phone = "01578787878"
+        self.request(
+            "/api/admin/settings",
+            "PUT",
+            {
+                "restaurant_name": "Broost",
+                "wallet_number": "01000000000",
+                "ordering_enabled": True,
+            },
+            admin=True,
+        )
+        item = max(
+            (
+                row for row in self.request("/api/store")["menu"]["items"]
+                if float(row["base_price"]) > 0
+            ),
+            key=lambda row: float(row["base_price"]),
+        )
+        order_payload = {
+            "client_request_id": "e2e-customer-controls-0001",
+            "fulfillment": "PICKUP",
+            "payment_method": "CASH",
+            "customer_name": "عميل لوحة العملاء",
+            "customer_phone": phone,
+            "area_id": None,
+            "detailed_address": "",
+            "notes": "",
+            "items": [{
+                "item_id": item["sync_id"],
+                "quantity": 1,
+                "size_id": None,
+                "extra_ids": [],
+                "spicy": False,
+            }],
+        }
+        order = self.request("/api/orders", "POST", order_payload)
+        remote = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == order["public_number"]
+        )
+
+        trusted = self.request(
+            f"/api/sync/customers/{phone}",
+            "PATCH",
+            {"force_trusted": True},
+            sync=True,
+        )
+        self.assertTrue(trusted["reliability"]["force_trusted"])
+        self.assertEqual(trusted["reliability"]["status"], "RELIABLE")
+
+        blocked = self.request(
+            f"/api/sync/customers/{phone}",
+            "PATCH",
+            {"is_blocked": True},
+            sync=True,
+        )
+        self.assertTrue(blocked["reliability"]["is_blocked"])
+        self.assertEqual(blocked["reliability"]["status"], "BLOCKED")
+
+        rejected_payload = dict(order_payload)
+        rejected_payload["client_request_id"] = "e2e-customer-controls-0002"
+        with self.assertRaises(urllib.error.HTTPError) as blocked_order:
+            self.request("/api/orders", "POST", rejected_payload)
+        self.assertEqual(blocked_order.exception.code, 403)
+
+        unblocked = self.request(
+            f"/api/sync/customers/{phone}",
+            "PATCH",
+            {"is_blocked": False},
+            sync=True,
+        )
+        self.assertFalse(unblocked["reliability"]["is_blocked"])
+        self.assertEqual(unblocked["reliability"]["status"], "RELIABLE")
+
+        self.request(
+            f"/api/admin/orders/{remote['id']}",
+            "PATCH",
+            {"status": "PREPARING"},
+            admin=True,
+        )
+        completed = self.request(
+            f"/api/admin/orders/{remote['id']}",
+            "PATCH",
+            {"status": "COMPLETED"},
+            admin=True,
+        )
+        expected_points = int(float(completed["total"]) // 10)
+        self.assertGreater(expected_points, 0)
+        self.assertEqual(self.request(f"/api/loyalty?phone={phone}")["points"], expected_points)
+
+        matching_customers = self.request(
+            f"/api/sync/customers?query={phone}", sync=True
+        )
+        self.assertEqual(len(matching_customers), 1)
+        self.assertEqual(matching_customers[0]["phone_normalized"], phone)
+
+        deleted = self.request(
+            f"/api/sync/customer-orders/{remote['id']}", "DELETE", sync=True
+        )
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(self.request(f"/api/loyalty?phone={phone}")["points"], 0)
+        self.assertEqual(
+            self.request(f"/api/customer/orders?phone={phone}")["orders"], []
+        )
+        with self.assertRaises(urllib.error.HTTPError) as missing_order:
+            self.request(f"/api/orders/{order['resume_token']}")
+        self.assertEqual(missing_order.exception.code, 404)
+
+        # The manual trust control remains manageable even after the last order is deleted.
+        profile = self.request(f"/api/sync/customers/{phone}", sync=True)
+        self.assertEqual(profile["orders"], [])
+        self.assertTrue(profile["reliability"]["force_trusted"])
+        reset = self.request(
+            f"/api/sync/customers/{phone}",
+            "PATCH",
+            {"force_trusted": False},
+            sync=True,
+        )
+        self.assertFalse(reset["reliability"]["force_trusted"])
+
+    def test_open_or_cancelled_large_order_never_creates_spendable_points(self):
+        phone = "01289898989"
+        self.request(
+            "/api/admin/settings",
+            "PUT",
+            {
+                "restaurant_name": "Broost",
+                "wallet_number": "01000000000",
+                "ordering_enabled": True,
+            },
+            admin=True,
+        )
+        item = max(
+            (
+                row for row in self.request("/api/store")["menu"]["items"]
+                if float(row["base_price"]) > 0
+            ),
+            key=lambda row: float(row["base_price"]),
+        )
+        quantity = min(30, max(10, int(1000 // float(item["base_price"])) + 1))
+        order = self.request(
+            "/api/orders",
+            "POST",
+            {
+                "client_request_id": "e2e-pending-points-never-spendable-0001",
+                "fulfillment": "PICKUP",
+                "payment_method": "CASH",
+                "customer_name": "عميل طلب كبير ملغي",
+                "customer_phone": phone,
+                "area_id": None,
+                "detailed_address": "",
+                "notes": "",
+                "items": [{
+                    "item_id": item["sync_id"],
+                    "quantity": quantity,
+                    "size_id": None,
+                    "extra_ids": [],
+                    "spicy": False,
+                }],
+            },
+        )
+        self.assertGreaterEqual(float(order["total"]), 1000)
+        self.assertEqual(order["loyalty"]["points"], 0)
+        self.assertEqual(order["loyalty"]["points_earned"], 0)
+        self.assertGreaterEqual(order["loyalty"]["pending_points"], 100)
+
+        with self.assertRaises(urllib.error.HTTPError) as early_code:
+            self.request(
+                "/api/loyalty/reward-codes",
+                "POST",
+                {"phone": phone},
+            )
+        self.assertEqual(early_code.exception.code, 409)
+
+        cancelled = self.request(f"/api/orders/{order['resume_token']}/cancel", "POST")
+        self.assertEqual(cancelled["status"], "CANCELLED")
+        self.assertEqual(cancelled["loyalty"]["points"], 0)
+        self.assertEqual(cancelled["loyalty"]["points_earned"], 0)
+        self.assertEqual(cancelled["loyalty"]["pending_points"], 0)
+
+        web_db = self.temp_path / "web" / "broost_web.db"
+        conn = sqlite3.connect(web_db, timeout=20)
+        earned_transactions = conn.execute(
+            "SELECT COUNT(*) FROM loyalty_transactions lt "
+            "JOIN orders o ON o.id=lt.order_id "
+            "WHERE o.resume_token=? AND lt.transaction_type='EARN'",
+            (order["resume_token"],),
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(earned_transactions, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,23 @@ from PyQt6.QtWidgets import (
 from core.display_text import pos_text
 
 
+def format_online_order_item(item: dict) -> str:
+    """Format every selected item detail on its own cashier-readable line."""
+    quantity = max(1, int(item.get("quantity", 1) or 1))
+    item_name = pos_text(item.get("item_name")) or "صنف"
+    lines = [f"{quantity} × {item_name}"]
+
+    size_name = pos_text(item.get("size_name", ""))
+    if size_name and size_name != "عادي":
+        lines.append(f"الحجم: {size_name}")
+
+    for extra in item.get("extras", []):
+        extra_name = pos_text(extra.get("name", ""))
+        if extra_name:
+            lines.append(f"إضافة: {extra_name}")
+    return "\n".join(lines)
+
+
 class OnlineOrderAlertDialog(QDialog):
     """Blocking, centered alert that remains until the cashier chooses an action."""
 
@@ -80,12 +97,14 @@ class OnlineOrderAlertDialog(QDialog):
         reliability = self.order.get("customer_reliability") or {}
         order_mood = reliability.get("order_mood", "NEUTRAL")
         mood_styles = {
+            "BLOCKED": ("⛔", "عميل محظور من إدارة العملاء", "#991b1b", "#fee2e2", "#ef4444"),
             "HAPPY": ("🙂", "استلم آخر طلب وكل شيء تمام", "#166534", "#dcfce7", "#22c55e"),
             "NEUTRAL": ("😐", "أول طلب للعميل", "#4b5563", "#f3f4f6", "#9ca3af"),
             "ANGRY": ("😠", "طلب سابق رجع أو لم يُستلم", "#991b1b", "#fee2e2", "#ef4444"),
         }
+        mood_key = "BLOCKED" if reliability.get("is_blocked") else order_mood
         mood_emoji, trust_label, trust_color, trust_bg, mood_badge_bg = mood_styles.get(
-            order_mood, mood_styles["NEUTRAL"]
+            mood_key, mood_styles["NEUTRAL"]
         )
         trust_frame = QFrame(self)
         trust_frame.setStyleSheet(
@@ -171,16 +190,7 @@ class OnlineOrderAlertDialog(QDialog):
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(7)
         for item in self.order.get("items", []):
-            extras = item.get("extras", [])
-            extra_names = "، ".join(
-                filter(None, (pos_text(extra.get("name", "")) for extra in extras))
-            )
-            text = f"{item.get('quantity', 1)} × {pos_text(item.get('item_name')) or 'صنف'}"
-            if item.get("size_name") and item.get("size_name") != "عادي":
-                text += f" — {pos_text(item['size_name'])}"
-            if extra_names:
-                text += f"\n{extra_names}"
-            item_label = QLabel(text, container)
+            item_label = QLabel(format_online_order_item(item), container)
             item_label.setObjectName("OnlineAlertItem")
             item_label.setWordWrap(True)
             list_layout.addWidget(item_label)

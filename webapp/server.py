@@ -288,6 +288,13 @@ def init_web_db() -> None:
                 FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS customer_controls (
+                phone_normalized TEXT PRIMARY KEY,
+                force_trusted INTEGER NOT NULL DEFAULT 0,
+                is_blocked INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS reviews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 customer_name TEXT NOT NULL,
@@ -805,6 +812,11 @@ class CustomerIssueUpdate(BaseModel):
     is_resolved: bool
 
 
+class CustomerControlUpdate(BaseModel):
+    force_trusted: bool | None = None
+    is_blocked: bool | None = None
+
+
 class CategoryInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     sort_order: int = Field(default=0, ge=0, le=10000)
@@ -912,6 +924,20 @@ def customer_issue_rows(conn: sqlite3.Connection, phone: str | None) -> list[dic
     ]
 
 
+def customer_control(conn: sqlite3.Connection, phone: str | None) -> dict[str, bool]:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return {"force_trusted": False, "is_blocked": False}
+    row = conn.execute(
+        "SELECT force_trusted, is_blocked FROM customer_controls WHERE phone_normalized=?",
+        (normalized,),
+    ).fetchone()
+    return {
+        "force_trusted": bool(row["force_trusted"]) if row else False,
+        "is_blocked": bool(row["is_blocked"]) if row else False,
+    }
+
+
 def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[str, Any]:
     normalized = normalize_phone(phone)
     if not normalized:
@@ -928,6 +954,8 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
             "last_terminal_status": None,
             "order_mood": "NEUTRAL",
             "needs_call": False,
+            "force_trusted": False,
+            "is_blocked": False,
         }
 
     stats = conn.execute(
@@ -964,13 +992,18 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
     cancelled = int(stats["cancelled_orders"] or 0)
     open_issues = int(issues["open_issues"] or 0)
     last_terminal_status = latest_terminal["status"] if latest_terminal else None
-    if completed >= 1:
+    control = customer_control(conn, normalized)
+    if control["is_blocked"]:
+        order_mood = "ANGRY"
+    elif control["force_trusted"] or completed >= 1:
         order_mood = "HAPPY"
     elif open_issues or last_terminal_status == "CANCELLED":
         order_mood = "ANGRY"
     else:
         order_mood = "NEUTRAL"
-    if completed >= 1:
+    if control["is_blocked"]:
+        status, label = "BLOCKED", "محظور"
+    elif control["force_trusted"] or completed >= 1:
         status, label = "RELIABLE", "موثوق"
     elif open_issues or last_terminal_status == "CANCELLED":
         status, label = "NEEDS_CONFIRMATION", "يحتاج تأكيد"
@@ -988,7 +1021,8 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
         "last_order_at": stats["last_order_at"],
         "last_terminal_status": last_terminal_status,
         "order_mood": order_mood,
-        "needs_call": status == "NEEDS_CONFIRMATION",
+        "needs_call": status in ("NEEDS_CONFIRMATION", "BLOCKED"),
+        **control,
     }
 
 
@@ -1275,6 +1309,11 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
             raise HTTPException(
                 status_code=422,
                 detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
+            )
+        if customer_control(conn, customer_phone_normalized)["is_blocked"]:
+            raise HTTPException(
+                status_code=403,
+                detail="لا يمكن إنشاء طلب بهذا الرقم. تواصل مع المطعم للمراجعة.",
             )
 
         area_id = None
@@ -2076,8 +2115,9 @@ def admin_orders(
         return [order_to_dict(conn, row) for row in rows]
 
 
-@app.get("/api/admin/customers", dependencies=[Depends(require_admin)])
-def admin_customers(query: str = "", limit: int = Query(default=250, ge=1, le=1000)) -> list[dict[str, Any]]:
+def customer_list_data(
+    conn: sqlite3.Connection, query: str = "", limit: int = 250
+) -> list[dict[str, Any]]:
     query = query.strip()
     normalized_query = normalize_phone(query)
     clauses = ["customer_phone_normalized IS NOT NULL", "customer_phone_normalized!=''"]
@@ -2085,54 +2125,178 @@ def admin_customers(query: str = "", limit: int = Query(default=250, ge=1, le=10
     if query:
         clauses.append("(customer_name LIKE ? OR customer_phone LIKE ? OR customer_phone_normalized LIKE ?)")
         params.extend((f"%{query}%", f"%{query}%", f"%{normalized_query or query}%"))
+    phones = conn.execute(
+        f"SELECT customer_phone_normalized, MAX(created_at) AS last_order_at "
+        f"FROM orders WHERE {' AND '.join(clauses)} "
+        "GROUP BY customer_phone_normalized ORDER BY last_order_at DESC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    phone_rows = {
+        row["customer_phone_normalized"]: row["last_order_at"] for row in phones
+    }
+    control_clauses = ["(force_trusted=1 OR is_blocked=1)"]
+    control_params: list[Any] = []
+    if query:
+        control_clauses.append("phone_normalized LIKE ?")
+        control_params.append(f"%{normalized_query or query}%")
+    control_rows = conn.execute(
+        f"SELECT phone_normalized, updated_at FROM customer_controls "
+        f"WHERE {' AND '.join(control_clauses)} ORDER BY updated_at DESC LIMIT ?",
+        (*control_params, limit),
+    ).fetchall()
+    for row in control_rows:
+        phone_rows.setdefault(row["phone_normalized"], row["updated_at"])
+
+    result: list[dict[str, Any]] = []
+    ordered_phones = sorted(
+        phone_rows.items(), key=lambda entry: entry[1] or "", reverse=True
+    )[:limit]
+    for phone, _last_activity in ordered_phones:
+        latest = conn.execute(
+            "SELECT customer_name, customer_phone FROM orders "
+            "WHERE customer_phone_normalized=? ORDER BY created_at DESC LIMIT 1",
+            (phone,),
+        ).fetchone()
+        summary = customer_reliability(conn, phone)
+        points = loyalty_profile(conn, phone)
+        result.append({
+            "customer_name": latest["customer_name"] if latest else "عميل",
+            "customer_phone": latest["customer_phone"] if latest else phone,
+            "phone_normalized": phone,
+            "loyalty_points": points["points"],
+            "reward_available": points["reward_available"],
+            **summary,
+        })
+    return result
+
+
+def customer_profile_data(conn: sqlite3.Connection, phone: str) -> dict[str, Any]:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="رقم الهاتف غير صالح")
+    orders = conn.execute(
+        "SELECT * FROM orders WHERE customer_phone_normalized=? "
+        "ORDER BY created_at DESC LIMIT 100",
+        (normalized,),
+    ).fetchall()
+    has_control = conn.execute(
+        "SELECT 1 FROM customer_controls WHERE phone_normalized=? LIMIT 1",
+        (normalized,),
+    ).fetchone()
+    if not orders and not has_control:
+        raise HTTPException(status_code=404, detail="لا يوجد عميل بهذا الرقم")
+    return {
+        "customer_name": orders[0]["customer_name"] if orders else "عميل",
+        "customer_phone": orders[0]["customer_phone"] if orders else normalized,
+        "phone_normalized": normalized,
+        "reliability": customer_reliability(conn, normalized),
+        "loyalty": loyalty_profile(conn, normalized),
+        "issues": customer_issue_rows(conn, normalized),
+        "orders": [order_to_dict(conn, row) for row in orders],
+    }
+
+
+@app.get("/api/admin/customers", dependencies=[Depends(require_admin)])
+def admin_customers(query: str = "", limit: int = Query(default=250, ge=1, le=1000)) -> list[dict[str, Any]]:
     with db_connection() as conn:
-        phones = conn.execute(
-            f"SELECT customer_phone_normalized, MAX(created_at) AS last_order_at "
-            f"FROM orders WHERE {' AND '.join(clauses)} "
-            "GROUP BY customer_phone_normalized ORDER BY last_order_at DESC LIMIT ?",
-            (*params, limit),
-        ).fetchall()
-        result: list[dict[str, Any]] = []
-        for phone_row in phones:
-            latest = conn.execute(
-                "SELECT customer_name, customer_phone FROM orders "
-                "WHERE customer_phone_normalized=? ORDER BY created_at DESC LIMIT 1",
-                (phone_row["customer_phone_normalized"],),
-            ).fetchone()
-            summary = customer_reliability(conn, phone_row["customer_phone_normalized"])
-            points = loyalty_profile(conn, phone_row["customer_phone_normalized"])
-            result.append({
-                "customer_name": latest["customer_name"] if latest else "عميل",
-                "customer_phone": latest["customer_phone"] if latest else phone_row["customer_phone_normalized"],
-                "phone_normalized": phone_row["customer_phone_normalized"],
-                "loyalty_points": points["points"],
-                "reward_available": points["reward_available"],
-                **summary,
-            })
-        return result
+        return customer_list_data(conn, query, limit)
 
 
 @app.get("/api/admin/customers/{phone}", dependencies=[Depends(require_admin)])
 def admin_customer_profile(phone: str) -> dict[str, Any]:
-    normalized = normalize_phone(phone)
-    if not normalized:
-        raise HTTPException(status_code=422, detail="رقم الهاتف غير صالح")
     with db_connection() as conn:
-        orders = conn.execute(
-            "SELECT * FROM orders WHERE customer_phone_normalized=? "
-            "ORDER BY created_at DESC LIMIT 50",
-            (normalized,),
-        ).fetchall()
-        if not orders:
+        return customer_profile_data(conn, phone)
+
+
+def update_customer_control(phone: str, payload: CustomerControlUpdate) -> dict[str, Any]:
+    normalized = normalize_phone(phone)
+    if not normalized or not valid_egyptian_mobile(normalized):
+        raise HTTPException(status_code=422, detail="رقم الهاتف غير صالح")
+    changes = payload.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="لا توجد تعديلات")
+    with db_connection(immediate=True) as conn:
+        has_order = conn.execute(
+            "SELECT 1 FROM orders WHERE customer_phone_normalized=? LIMIT 1", (normalized,)
+        ).fetchone()
+        has_control = conn.execute(
+            "SELECT 1 FROM customer_controls WHERE phone_normalized=? LIMIT 1", (normalized,)
+        ).fetchone()
+        if not has_order and not has_control:
             raise HTTPException(status_code=404, detail="لا يوجد عميل بهذا الرقم")
-        return {
-            "customer_name": orders[0]["customer_name"],
-            "customer_phone": orders[0]["customer_phone"],
-            "reliability": customer_reliability(conn, normalized),
-            "loyalty": loyalty_profile(conn, normalized),
-            "issues": customer_issue_rows(conn, normalized),
-            "orders": [order_to_dict(conn, row) for row in orders],
+        current = customer_control(conn, normalized)
+        force_trusted = bool(changes.get("force_trusted", current["force_trusted"]))
+        is_blocked = bool(changes.get("is_blocked", current["is_blocked"]))
+        conn.execute(
+            "INSERT INTO customer_controls "
+            "(phone_normalized, force_trusted, is_blocked, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(phone_normalized) DO UPDATE SET "
+            "force_trusted=excluded.force_trusted, is_blocked=excluded.is_blocked, "
+            "updated_at=excluded.updated_at",
+            (normalized, int(force_trusted), int(is_blocked), utc_now()),
+        )
+        latest = conn.execute(
+            "SELECT id FROM orders WHERE customer_phone_normalized=? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (normalized,),
+        ).fetchone()
+        if latest:
+            emit_event(
+                conn,
+                latest["id"],
+                "CUSTOMER_CONTROL_UPDATED",
+                {"force_trusted": force_trusted, "is_blocked": is_blocked},
+            )
+        return customer_profile_data(conn, normalized)
+
+
+@app.patch("/api/admin/customers/{phone}", dependencies=[Depends(require_admin)])
+def update_admin_customer_control(phone: str, payload: CustomerControlUpdate) -> dict[str, Any]:
+    return update_customer_control(phone, payload)
+
+
+def delete_customer_order_record(order_id: int) -> dict[str, Any]:
+    proof_storage_id = ""
+    with db_connection(immediate=True) as conn:
+        order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        if not order:
+            raise HTTPException(status_code=404, detail="الطلب غير موجود")
+
+        if order["status"] != "CANCELLED":
+            conn.execute(
+                "UPDATE orders SET status='CANCELLED', cancelled_by='CASHIER', "
+                "closed_at=?, updated_at=? WHERE id=?",
+                (utc_now(), utc_now(), order_id),
+            )
+        reconcile_order_loyalty(conn, order_id)
+
+        conn.execute(
+            "UPDATE reward_codes SET status='ACTIVE', reserved_order_id=NULL, used_order_id=NULL, "
+            "reserved_at=NULL, used_at=NULL WHERE reserved_order_id=? OR used_order_id=?",
+            (order_id, order_id),
+        )
+        conn.execute("DELETE FROM customer_issues WHERE order_id=?", (order_id,))
+        proof_storage_id = str(order["proof_storage_id"] or "")
+        result = {
+            "ok": True,
+            "id": int(order["id"]),
+            "source": order["source"],
+            "local_order_id": order["local_order_id"],
+            "phone_normalized": order["customer_phone_normalized"],
         }
+        conn.execute("DELETE FROM orders WHERE id=?", (order_id,))
+
+    if proof_storage_id and CLOUDINARY_URL:
+        try:
+            cloudinary.uploader.destroy(proof_storage_id, invalidate=True)
+        except CloudinaryError:
+            pass
+    return result
+
+
+@app.delete("/api/admin/customer-orders/{order_id}", dependencies=[Depends(require_admin)])
+def delete_admin_customer_order(order_id: int) -> dict[str, Any]:
+    return delete_customer_order_record(order_id)
 
 
 @app.post("/api/admin/orders/{order_id}/customer-issues", dependencies=[Depends(require_admin)])
@@ -2232,6 +2396,30 @@ def get_admin_proof(order_id: int) -> Response:
         if not row or not row["proof_filename"]:
             raise HTTPException(status_code=404, detail="لا يوجد إثبات تحويل لهذا الطلب")
         return payment_proof_response(row)
+
+
+@app.get("/api/sync/customers", dependencies=[Depends(require_sync)])
+def sync_customers(
+    query: str = "", limit: int = Query(default=250, ge=1, le=1000)
+) -> list[dict[str, Any]]:
+    with db_connection() as conn:
+        return customer_list_data(conn, query, limit)
+
+
+@app.get("/api/sync/customers/{phone}", dependencies=[Depends(require_sync)])
+def sync_customer_profile(phone: str) -> dict[str, Any]:
+    with db_connection() as conn:
+        return customer_profile_data(conn, phone)
+
+
+@app.patch("/api/sync/customers/{phone}", dependencies=[Depends(require_sync)])
+def sync_update_customer_control(phone: str, payload: CustomerControlUpdate) -> dict[str, Any]:
+    return update_customer_control(phone, payload)
+
+
+@app.delete("/api/sync/customer-orders/{order_id}", dependencies=[Depends(require_sync)])
+def sync_delete_customer_order(order_id: int) -> dict[str, Any]:
+    return delete_customer_order_record(order_id)
 
 
 @app.get("/api/sync/menu", dependencies=[Depends(require_sync)])

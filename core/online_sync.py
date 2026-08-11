@@ -74,6 +74,25 @@ class OnlineSyncManager(QObject):
         self._set_connected(True, "متزامن أونلاين")
         return result
 
+    def search_remote_customers(self, query: str = "") -> list[dict[str, Any]]:
+        encoded = urllib.parse.quote((query or "").strip())
+        return self._request_json(f"/api/sync/customers?query={encoded}")
+
+    def get_remote_customer(self, phone: str) -> dict[str, Any]:
+        encoded = urllib.parse.quote((phone or "").strip())
+        return self._request_json(f"/api/sync/customers/{encoded}")
+
+    def update_remote_customer(self, phone: str, **changes: Any) -> dict[str, Any]:
+        encoded = urllib.parse.quote((phone or "").strip())
+        return self._request_json(
+            f"/api/sync/customers/{encoded}", method="PATCH", payload=changes
+        )
+
+    def delete_remote_customer_order(self, order_id: int) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/sync/customer-orders/{int(order_id)}", method="DELETE"
+        )
+
     def _poll_worker(self) -> None:
         if not self._busy_lock.acquire(blocking=False):
             return
