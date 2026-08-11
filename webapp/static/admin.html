@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#202024">
   <title>Broost — لوحة الأدمن</title>
   <link rel="icon" href="/logo.ico">
-  <link rel="stylesheet" href="/assets/styles.css?v=20260805-6">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260811-1">
 </head>
 <body>
   <div class="admin-shell">
@@ -122,7 +122,8 @@
         <div class="field field-full"><label for="areaNameInput">اسم القرية</label><input class="input" id="areaNameInput"></div>
         <div class="field"><label for="areaFeeInput">رسوم التوصيل</label><input class="input" id="areaFeeInput" type="number" min="0" step="1"></div>
         <div class="field"><label for="areaSortInput">الترتيب</label><input class="input" id="areaSortInput" type="number" min="0" step="1"></div>
-        <label class="option-row field-full"><span>متاحة للطلب</span><input type="checkbox" id="areaActiveInput" checked></label>
+        <label class="option-row field-full"><span><strong>إظهار القرية في الموقع</strong><small class="muted">أوقفها فقط لو مش عايز القرية تظهر نهائيًا.</small></span><input type="checkbox" id="areaActiveInput" checked></label>
+        <label class="option-row field-full"><span><strong>التوصيل متاح حاليًا</strong><small class="muted">يمكن إيقاف التوصيل مؤقتًا مع بقاء القرية والسعر ظاهرين.</small></span><input type="checkbox" id="areaDeliveryInput" checked></label>
         <p class="error-text field-full" id="areaError"></p>
       </div>
       <footer class="modal-foot"><button class="btn btn-primary btn-block" id="saveAreaBtn">حفظ القرية</button></footer>
@@ -223,6 +224,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/admin.js?v=20260806-1" defer></script>
+  <script src="/assets/admin.js?v=20260811-1" defer></script>
 </body>
 </html>

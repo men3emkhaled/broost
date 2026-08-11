@@ -237,7 +237,7 @@ async function saveIssue() {
 async function loadAreas() {
   adminState.areas = await adminApi("/api/admin/areas");
   $("#areasTable").innerHTML = adminState.areas.map((area) => `
-    <tr><td><strong>${escapeHtml(area.name)}</strong></td><td>${money(area.delivery_fee)}</td><td>${area.sort_order}</td><td><span class="badge ${area.is_active ? "badge-success" : "badge-danger"}">${area.is_active ? "متاحة" : "موقوفة"}</span></td><td><div class="inline-actions"><button class="btn btn-small" data-edit-area="${area.id}">تعديل</button><button class="btn btn-small btn-danger" data-disable-area="${area.id}">إيقاف</button></div></td></tr>`).join("") || `<tr><td colspan="5" class="empty-state">لم تتم إضافة قرى بعد.</td></tr>`;
+    <tr><td><strong>${escapeHtml(area.name)}</strong></td><td>${money(area.delivery_fee)}</td><td>${area.sort_order}</td><td><span class="badge ${area.is_active ? "badge-success" : "badge-danger"}">${area.is_active ? "ظاهرة" : "مخفية"}</span> <span class="badge ${area.delivery_enabled ? "badge-success" : "badge-warning"}">${area.delivery_enabled ? "التوصيل متاح" : "التوصيل متوقف"}</span></td><td><div class="inline-actions"><button class="btn btn-small" data-edit-area="${area.id}">تعديل</button><button class="btn btn-small ${area.delivery_enabled ? "btn-danger" : "btn-primary"}" data-toggle-area-delivery="${area.id}">${area.delivery_enabled ? "إيقاف التوصيل" : "تشغيل التوصيل"}</button></div></td></tr>`).join("") || `<tr><td colspan="5" class="empty-state">لم تتم إضافة قرى بعد.</td></tr>`;
 }
 
 function openArea(area = null) {
@@ -247,12 +247,13 @@ function openArea(area = null) {
   $("#areaFeeInput").value = area?.delivery_fee ?? "";
   $("#areaSortInput").value = area?.sort_order ?? adminState.areas.length + 1;
   $("#areaActiveInput").checked = area ? Boolean(area.is_active) : true;
+  $("#areaDeliveryInput").checked = area ? Boolean(area.delivery_enabled) : true;
   $("#areaError").textContent = "";
   $("#areaModal").hidden = false;
 }
 
 async function saveArea() {
-  const payload = { name: $("#areaNameInput").value.trim(), delivery_fee: Number($("#areaFeeInput").value), sort_order: Number($("#areaSortInput").value || 0), is_active: $("#areaActiveInput").checked };
+  const payload = { name: $("#areaNameInput").value.trim(), delivery_fee: Number($("#areaFeeInput").value), sort_order: Number($("#areaSortInput").value || 0), is_active: $("#areaActiveInput").checked, delivery_enabled: $("#areaDeliveryInput").checked };
   if (!payload.name) return void ($("#areaError").textContent = "اكتب اسم القرية.");
   try {
     await adminApi(adminState.editingArea ? `/api/admin/areas/${adminState.editingArea.id}` : "/api/admin/areas", { method: adminState.editingArea ? "PATCH" : "POST", body: JSON.stringify(payload) });
@@ -563,8 +564,14 @@ document.addEventListener("click", async (event) => {
 
   const editArea = event.target.closest("[data-edit-area]");
   if (editArea) openArea(adminState.areas.find((row) => row.id === Number(editArea.dataset.editArea)));
-  const disableArea = event.target.closest("[data-disable-area]");
-  if (disableArea && confirm("إيقاف هذه القرية من موقع الطلب؟")) { await adminApi(`/api/admin/areas/${disableArea.dataset.disableArea}`, { method: "DELETE" }); await loadAreas(); }
+  const toggleArea = event.target.closest("[data-toggle-area-delivery]");
+  if (toggleArea) {
+    const area = adminState.areas.find((row) => row.id === Number(toggleArea.dataset.toggleAreaDelivery));
+    if (area && confirm(area.delivery_enabled ? "إيقاف التوصيل لهذه القرية مؤقتًا؟ ستظل القرية والسعر ظاهرين." : "تشغيل التوصيل لهذه القرية؟")) {
+      await adminApi(`/api/admin/areas/${area.id}`, { method: "PATCH", body: JSON.stringify({ delivery_enabled: !area.delivery_enabled }) });
+      await loadAreas();
+    }
+  }
 
   const editCategory = event.target.closest("[data-edit-category]");
   if (editCategory) openCategory(activeCategories().find((row) => row.sync_id === editCategory.dataset.editCategory));

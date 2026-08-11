@@ -652,6 +652,150 @@ class BroostEndToEndTest(unittest.TestCase):
         self.assertEqual(paid_profile["points"], 17)
         self.assertEqual(paid_profile["lifetime_points"], 17)
 
+    def test_reward_code_discount_history_and_cancelled_code_reuse(self):
+        web_db = self.temp_path / "web" / "broost_web.db"
+        phone = "01060606060"
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute(
+            "INSERT OR REPLACE INTO loyalty_accounts "
+            "(phone_normalized, points_balance, lifetime_points, updated_at) "
+            "VALUES (?, 100, 100, ?)",
+            (phone, "2026-08-11T10:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+        profile = self.request(
+            "/api/loyalty/reward-codes", "POST", {"phone": phone}
+        )
+        self.assertEqual(profile["points"], 0)
+        self.assertEqual(len(profile["reward_codes"]), 1)
+        reward_code = profile["reward_codes"][0]["code"]
+
+        store = self.request("/api/store")
+        item = max(
+            (row for row in store["menu"]["items"] if float(row["base_price"]) > 0),
+            key=lambda row: float(row["base_price"]),
+        )
+        quantity = max(1, min(30, int(170 // float(item["base_price"])) + 1))
+        area = self.request(
+            "/api/admin/areas",
+            "POST",
+            {
+                "name": "قرية كود اختبار",
+                "delivery_fee": 37,
+                "is_active": True,
+                "delivery_enabled": True,
+                "sort_order": 71,
+            },
+            admin=True,
+        )
+        order_payload = {
+            "client_request_id": "e2e-reward-code-0001",
+            "fulfillment": "DELIVERY",
+            "payment_method": "CASH",
+            "customer_name": "عميل كود اختبار",
+            "customer_phone": phone,
+            "area_id": area["id"],
+            "detailed_address": "شارع اختبار",
+            "notes": "",
+            "reward_code": reward_code,
+            "items": [{
+                "item_id": item["sync_id"], "quantity": quantity,
+                "size_id": None, "extra_ids": [], "spicy": False,
+            }],
+        }
+        order = self.request("/api/orders", "POST", order_payload)
+        self.assertGreater(order["subtotal"], 150)
+        self.assertEqual(order["discount"], 150)
+        self.assertEqual(order["delivery_fee"], 37)
+        self.assertEqual(order["total"], round(order["subtotal"] - 150 + 37, 2))
+        self.assertEqual(order["reward"]["code"], reward_code)
+        self.assertEqual(order["reward"]["status"], "RESERVED")
+        self.assertFalse(self.request(f"/api/loyalty?phone={phone}")["reward_codes"])
+
+        history = self.request(f"/api/customer/orders?phone={phone}")
+        self.assertEqual(history["orders"][0]["public_number"], order["public_number"])
+        self.assertEqual(history["orders"][0]["discount"], 150)
+
+        cancelled = self.request(f"/api/orders/{order['resume_token']}/cancel", "POST")
+        self.assertEqual(cancelled["reward"]["status"], "ACTIVE")
+        after_cancel = self.request(f"/api/loyalty?phone={phone}")
+        self.assertEqual(after_cancel["points"], 0)
+        self.assertEqual(after_cancel["reward_codes"][0]["code"], reward_code)
+
+        order_payload.update({
+            "client_request_id": "e2e-reward-code-0002",
+            "fulfillment": "PICKUP",
+            "area_id": None,
+            "detailed_address": "",
+        })
+        reused = self.request("/api/orders", "POST", order_payload)
+        remote = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == reused["public_number"]
+        )
+        self.request(
+            f"/api/admin/orders/{remote['id']}", "PATCH", {"status": "PREPARING"}, admin=True
+        )
+        completed = self.request(
+            f"/api/admin/orders/{remote['id']}", "PATCH", {"status": "COMPLETED"}, admin=True
+        )
+        self.assertEqual(completed["reward"]["status"], "USED")
+        self.assertFalse(self.request(f"/api/loyalty?phone={phone}")["reward_codes"])
+
+        order_payload["client_request_id"] = "e2e-reward-code-0003"
+        with self.assertRaises(urllib.error.HTTPError) as reused_error:
+            self.request("/api/orders", "POST", order_payload)
+        self.assertEqual(reused_error.exception.code, 409)
+
+    def test_delivery_area_can_pause_without_disappearing(self):
+        area = self.request(
+            "/api/admin/areas",
+            "POST",
+            {
+                "name": "قرية متوقفة اختبار",
+                "delivery_fee": 42,
+                "is_active": True,
+                "delivery_enabled": False,
+                "sort_order": 72,
+            },
+            admin=True,
+        )
+        public_area = next(
+            row for row in self.request("/api/store")["areas"] if row["id"] == area["id"]
+        )
+        self.assertEqual(public_area["delivery_fee"], 42)
+        self.assertFalse(public_area["delivery_enabled"])
+
+        item = self.request("/api/store")["menu"]["items"][0]
+        payload = {
+            "client_request_id": "e2e-paused-area-0001",
+            "fulfillment": "DELIVERY",
+            "payment_method": "CASH",
+            "customer_name": "عميل قرية متوقفة",
+            "customer_phone": "01070707070",
+            "area_id": area["id"],
+            "detailed_address": "شارع اختبار",
+            "notes": "",
+            "items": [{
+                "item_id": item["sync_id"], "quantity": 1,
+                "size_id": None, "extra_ids": [], "spicy": False,
+            }],
+        }
+        with self.assertRaises(urllib.error.HTTPError) as paused_error:
+            self.request("/api/orders", "POST", payload)
+        self.assertEqual(paused_error.exception.code, 409)
+
+        self.request(
+            f"/api/admin/areas/{area['id']}",
+            "PATCH",
+            {"delivery_enabled": True},
+            admin=True,
+        )
+        created = self.request("/api/orders", "POST", payload)
+        self.assertEqual(created["delivery_fee"], 42)
+
     def test_strict_wallet_rejection_and_stale_sync_preserve_points_and_totals(self):
         manager = OnlineSyncManager()
         manager._poll_worker()

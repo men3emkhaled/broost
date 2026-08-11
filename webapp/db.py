@@ -58,6 +58,10 @@ class PostgresCursor:
     def fetchall(self) -> list[Any]:
         return self._cursor.fetchall()
 
+    def __iter__(self):
+        """Match sqlite3.Cursor iteration for shared query code."""
+        return iter(self._cursor)
+
 
 def _postgres_sql(sql: str) -> str:
     """Translate the qmark placeholders used by sqlite3 to psycopg format."""

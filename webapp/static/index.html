@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#c91432">
   <title>Broost — اطلب أونلاين</title>
   <link rel="icon" href="/logo.ico">
-  <link rel="stylesheet" href="/assets/styles.css?v=20260805-7">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260811-1">
 </head>
 <body class="customer-site">
   <div class="app-shell">
@@ -24,10 +24,18 @@
       </nav>
       <div class="top-actions">
         <button class="btn btn-soft login-btn" id="loginBtn">تسجيل الدخول</button>
+        <button class="btn btn-soft orders-btn" id="ordersBtn" aria-label="طلباتي">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.75h10a2 2 0 0 1 2 2v14.5l-3-1.8-4 1.8-4-1.8-3 1.8V5.75a2 2 0 0 1 2-2Z"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/></svg>
+          <span>طلباتي</span><b id="ordersBadge" hidden>0</b>
+        </button>
         <button class="btn btn-soft resume-order-btn" id="resumeOrderBtn" hidden><span aria-hidden="true">↻</span> متابعة طلبي</button>
         <button class="btn btn-primary header-order-btn" id="headerOrderBtn">اطلب الآن</button>
       </div>
     </header>
+    <div class="store-closed-banner" id="storeClosedBanner" hidden>
+      <strong>المطعم مقفول حاليًا</strong>
+      <span>المنيو وأسعار التوصيل ظاهرين عادي، وتقدر تجهّز طلبك لحد ما الكاشير يفتح.</span>
+    </div>
 
     <main id="menuView">
       <div class="container">
@@ -139,8 +147,12 @@
               <div class="field"><label for="customerName">الاسم *</label><input class="input" id="customerName" autocomplete="name"></div>
               <div class="field"><label for="customerPhone">رقم الموبايل *</label><input class="input" id="customerPhone" inputmode="tel" autocomplete="tel"></div>
               <div class="field field-full loyalty-checkout" id="loyaltyCheckout">
-                <div><span class="eyebrow">نقط بروست</span><strong id="loyaltyBalanceText">اكتب رقم الموبايل لمعرفة رصيدك</strong><small id="loyaltyHint">كل 10 جنيه مدفوعة = نقطة، و100 نقطة = أوردر مجاني حتى 150 جنيه.</small></div>
-                <label class="reward-option" id="rewardOption" hidden><input type="checkbox" id="redeemReward"><span><strong>استخدم 100 نقطة</strong><small>المنتجات علينا حتى 150 جنيه، ورسوم التوصيل فقط إن وجدت.</small></span></label>
+                <div><span class="eyebrow">مكافآت بروست</span><strong id="loyaltyBalanceText">اكتب رقم الموبايل لمعرفة رصيدك</strong><small id="loyaltyHint">حوّل كل 100 نقطة لكود خصم بقيمة 150 جنيه على المنتجات.</small></div>
+                <div class="reward-code-entry">
+                  <input class="input" id="rewardCodeInput" maxlength="40" autocomplete="off" placeholder="اكتب كود المكافأة" dir="ltr">
+                  <button class="btn btn-soft" id="applyRewardCodeBtn" type="button">تطبيق</button>
+                </div>
+                <p class="reward-code-status" id="rewardCodeStatus"></p>
               </div>
               <div class="field delivery-only"><label for="areaSelect">القرية *</label><select class="input" id="areaSelect"></select></div>
               <div class="field field-full delivery-only"><label for="customerAddress">العنوان بالتفصيل *</label><textarea class="input" id="customerAddress" rows="3" placeholder="الشارع، رقم البيت، وأقرب علامة مميزة"></textarea></div>
@@ -163,7 +175,7 @@
             </div>
             <div class="cart-lines" id="checkoutCart"></div>
             <div class="summary-row"><span>المنتجات</span><strong id="checkoutSubtotal">0 جنيه</strong></div>
-            <div class="summary-row reward-discount-row" id="checkoutDiscountRow" hidden><span>مكافأة 100 نقطة</span><strong id="checkoutDiscount">− 0 جنيه</strong></div>
+            <div class="summary-row reward-discount-row" id="checkoutDiscountRow" hidden><span>كود المكافأة</span><strong id="checkoutDiscount">− 0 جنيه</strong></div>
             <div class="summary-row"><span>رسوم التوصيل</span><strong id="checkoutDelivery">اختر القرية</strong></div>
             <div class="summary-row summary-total"><span>الإجمالي</span><strong id="checkoutTotal">0 جنيه</strong></div>
             <button class="btn btn-primary btn-block checkout-submit" id="submitOrderBtn">تأكيد الطلب</button>
@@ -229,9 +241,21 @@
       <div class="modal-body">
         <div class="field"><label for="loginPhone">رقم الموبايل</label><input class="input" id="loginPhone" inputmode="tel" autocomplete="tel" placeholder="01xxxxxxxxx" dir="ltr"></div>
         <div class="login-points-preview" id="loginPointsPreview" hidden></div>
+        <section class="reward-wallet" id="rewardWallet" hidden>
+          <div class="reward-wallet-head"><div><strong>حوّل نقاطك لكود</strong><small>100 نقطة = خصم حتى 150 جنيه على المنتجات، والتوصيل يتحسب منفصل.</small></div><button class="btn btn-primary" id="generateRewardCodeBtn" type="button">إنشاء كود</button></div>
+          <div class="reward-code-list" id="rewardCodesList"></div>
+          <p class="error-text" id="rewardCodeError"></p>
+        </section>
         <p class="error-text" id="loginError"></p>
       </div>
       <footer class="modal-foot"><button class="btn btn-primary btn-block" id="loginSubmitBtn">دخول وعرض نقاطي</button></footer>
+    </section>
+  </div>
+
+  <div class="overlay" id="ordersModal" hidden>
+    <section class="modal orders-modal" role="dialog" aria-modal="true" aria-labelledby="ordersModalTitle">
+      <header class="modal-head"><div><span class="eyebrow">حسابك</span><h2 id="ordersModalTitle">طلباتك</h2><p class="muted">كل طلبات الموقع المسجلة بنفس رقم الموبايل.</p></div><button class="modal-close simple-close" id="closeOrdersModal" aria-label="إغلاق">×</button></header>
+      <div class="modal-body"><div class="customer-orders-list" id="customerOrdersList"></div><p class="error-text" id="ordersError"></p></div>
     </section>
   </div>
 
@@ -250,6 +274,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/customer.js?v=20260806-2" defer></script>
+  <script src="/assets/customer.js?v=20260811-1" defer></script>
 </body>
 </html>

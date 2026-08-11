@@ -12,7 +12,10 @@ const state = {
   loyalty: null,
   accountLoyalty: null,
   loggedPhone: localStorage.getItem("broost_logged_phone") || "",
-  redeemReward: false,
+  rewardCode: "",
+  rewardApplied: null,
+  orders: [],
+  openOrdersAfterLogin: false,
   loyaltyTimer: null,
 };
 
@@ -110,39 +113,48 @@ function cartSubtotal() {
   return state.cart.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);
 }
 
-function rewardCanApply() {
-  const subtotal = cartSubtotal();
-  return Boolean(state.loyalty?.reward_available && subtotal > 0 && subtotal <= 150);
+function rewardDiscount() {
+  if (!state.rewardApplied || !cartSubtotal()) return 0;
+  return Math.min(cartSubtotal(), Number(state.rewardApplied.value || 150));
 }
 
 function renderLoyalty() {
   const balanceText = $("#loyaltyBalanceText");
   const hint = $("#loyaltyHint");
-  const option = $("#rewardOption");
-  const checkbox = $("#redeemReward");
   if (!state.loyalty) {
     balanceText.textContent = "اكتب رقم الموبايل لمعرفة رصيدك";
-    hint.textContent = "كل 10 جنيه مدفوعة = نقطة، و100 نقطة = أوردر مجاني حتى 150 جنيه.";
-    option.hidden = true;
-    state.redeemReward = false;
-    checkbox.checked = false;
+    hint.textContent = "كل 100 نقطة تتحول لكود خصم 150 جنيه على المنتجات.";
+    state.rewardApplied = null;
     return;
   }
 
   balanceText.textContent = `رصيدك ${Number(state.loyalty.points || 0)} نقطة`;
-  const canApply = rewardCanApply();
-  option.hidden = !canApply;
-  if (!state.loyalty.reward_available) {
-    hint.textContent = `فاضلك ${Number(state.loyalty.points_to_reward || 0)} نقطة على الأوردر المجاني.`;
-  } else if (cartSubtotal() > 150) {
-    hint.textContent = "معاك مكافأة جاهزة؛ خلي قيمة المنتجات 150 جنيه أو أقل لاستخدامها.";
+  const codes = state.loyalty.reward_codes || [];
+  if (codes.length) {
+    hint.textContent = `معاك ${codes.length} كود جاهز. الخصم حتى 150 جنيه ولا يشمل التوصيل.`;
+  } else if (!state.loyalty.reward_available) {
+    hint.textContent = `فاضلك ${Number(state.loyalty.points_to_reward || 0)} نقطة علشان تنشئ كود 150 جنيه.`;
   } else {
-    hint.textContent = "معاك أوردر مجاني جاهز حتى 150 جنيه.";
+    hint.textContent = "معاك 100 نقطة جاهزة — افتح حسابك وحولها لكود 150 جنيه.";
   }
-  if (!canApply) {
-    state.redeemReward = false;
-    checkbox.checked = false;
-  }
+  renderRewardWallet();
+}
+
+function renderRewardWallet() {
+  const wallet = $("#rewardWallet");
+  if (!wallet) return;
+  wallet.hidden = !state.loggedPhone;
+  if (!state.loggedPhone) return;
+  const profile = state.accountLoyalty || state.loyalty || {};
+  const codes = profile.reward_codes || [];
+  const button = $("#generateRewardCodeBtn");
+  button.disabled = Number(profile.points || 0) < 100;
+  button.textContent = button.disabled ? `فاضلك ${Number(profile.points_to_reward || 0)} نقطة` : "إنشاء كود بـ100 نقطة";
+  $("#rewardCodesList").innerHTML = codes.length ? codes.map((reward) => `
+    <div class="reward-code-card">
+      <span><small>كود خصم ${money(reward.value)}</small><strong dir="ltr">${escapeHtml(reward.code)}</strong></span>
+      <span class="inline-actions"><button class="btn btn-small" data-copy-reward="${escapeHtml(reward.code)}">نسخ</button><button class="btn btn-small btn-primary" data-use-reward="${escapeHtml(reward.code)}">استخدمه</button></span>
+    </div>`).join("") : `<div class="empty-state compact-empty">مفيش أكواد جاهزة حاليًا.</div>`;
 }
 
 async function loadLoyalty() {
@@ -201,10 +213,14 @@ function renderLoginState() {
   if (!state.loggedPhone) {
     button.textContent = "تسجيل الدخول";
     button.classList.remove("is-logged-in");
+    $("#ordersBadge").hidden = true;
     return;
   }
   button.textContent = `حسابي · ${Number(state.accountLoyalty?.points || 0)} نقطة`;
   button.classList.add("is-logged-in");
+  const badge = $("#ordersBadge");
+  badge.textContent = String(state.orders.length);
+  badge.hidden = !state.orders.length;
 }
 
 function openLoginModal() {
@@ -213,8 +229,9 @@ function openLoginModal() {
   const preview = $("#loginPointsPreview");
   preview.hidden = !state.loggedPhone;
   preview.textContent = state.loggedPhone
-    ? `رصيدك الحالي ${Number(state.accountLoyalty?.points || 0)} نقطة`
+    ? `رصيدك الحالي ${Number(state.accountLoyalty?.points || 0)} نقطة · ${(state.accountLoyalty?.reward_codes || []).length} كود متاح`
     : "";
+  renderRewardWallet();
   $("#loginModal").hidden = false;
   setTimeout(() => $("#loginPhone").focus(), 20);
 }
@@ -242,6 +259,8 @@ async function submitPhoneLogin() {
     renderLoyalty();
     updateCheckoutTotals();
     $("#loginModal").hidden = true;
+    await loadCustomerOrders(state.openOrdersAfterLogin);
+    state.openOrdersAfterLogin = false;
   } catch (error) {
     $("#loginError").textContent = error.message;
   } finally {
@@ -250,10 +269,63 @@ async function submitPhoneLogin() {
   }
 }
 
+async function generateRewardCode() {
+  if (!state.loggedPhone) return openLoginModal();
+  const button = $("#generateRewardCodeBtn");
+  button.disabled = true;
+  button.textContent = "جاري إنشاء الكود...";
+  $("#rewardCodeError").textContent = "";
+  try {
+    const profile = await api("/api/loyalty/reward-codes", {
+      method: "POST",
+      body: JSON.stringify({ phone: state.loggedPhone }),
+    });
+    state.accountLoyalty = profile;
+    state.loyalty = profile;
+    renderLoginState();
+    renderLoyalty();
+    const newest = profile.reward_codes?.[0];
+    if (newest) $("#rewardCodeError").textContent = `تم إنشاء ${newest.code} — جاهز للاستخدام.`;
+  } catch (error) {
+    $("#rewardCodeError").textContent = error.message;
+  } finally {
+    renderRewardWallet();
+  }
+}
+
+async function applyRewardCode(code = $("#rewardCodeInput").value) {
+  const normalized = String(code || "").trim().toUpperCase();
+  const status = $("#rewardCodeStatus");
+  status.className = "reward-code-status";
+  if (!normalized) {
+    state.rewardCode = "";
+    state.rewardApplied = null;
+    status.textContent = "";
+    updateCheckoutTotals();
+    return;
+  }
+  if (!state.loyalty) await loadLoyalty();
+  const reward = (state.loyalty?.reward_codes || []).find((row) => row.code === normalized);
+  if (!reward) {
+    state.rewardCode = "";
+    state.rewardApplied = null;
+    status.textContent = "الكود غير متاح للرقم المكتوب أو تم استخدامه.";
+    status.classList.add("is-error");
+    updateCheckoutTotals();
+    return;
+  }
+  state.rewardCode = normalized;
+  state.rewardApplied = reward;
+  $("#rewardCodeInput").value = normalized;
+  status.textContent = `تم تطبيق الكود: خصم حتى ${money(reward.value)} على المنتجات.`;
+  status.classList.add("is-success");
+  updateCheckoutTotals();
+}
+
 function renderCartPointsProgress() {
   const subtotal = cartSubtotal();
   const fee = currentDeliveryFee();
-  const discount = state.redeemReward && rewardCanApply() ? subtotal : 0;
+  const discount = rewardDiscount();
   const paidTotal = Math.max(0, subtotal - discount + (fee || 0));
   const orderPoints = Math.floor((paidTotal + 0.000001) / 10);
   const title = $("#cartPointsTitle");
@@ -265,14 +337,14 @@ function renderCartPointsProgress() {
     hint.textContent = "سجّل دخولك برقم الموبايل علشان النقاط تتضاف لرصيدك.";
     progress = Math.min(100, orderPoints);
   } else {
-    const startingPoints = Math.max(0, Number(state.loyalty.points || 0) - (state.redeemReward ? 100 : 0));
+    const startingPoints = Math.max(0, Number(state.loyalty.points || 0));
     const afterOrder = startingPoints + orderPoints;
     title.textContent = orderPoints
       ? `الأوردر ده هيضيف لك ${orderPoints} نقطة`
-      : state.redeemReward ? "بتستخدم مكافأتك في الأوردر ده" : "نقطك مستنياك";
+      : state.rewardApplied ? "بتستخدم كود مكافأة في الأوردر ده" : "نقطك مستنياك";
     hint.textContent = afterOrder >= 100
-      ? `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة — أوردر مجاني لحد 150 جنيه جاهز ليك.`
-      : `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة، وفاضلك ${100 - afterOrder} نقطة على الأوردر المجاني.`;
+      ? `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة — تقدر تحول 100 نقطة لكود 150 جنيه.`
+      : `بعد استلام الطلب هيبقى معاك ${afterOrder} نقطة، وفاضلك ${100 - afterOrder} نقطة على كود جديد.`;
     progress = Math.min(100, afterOrder);
   }
 
@@ -300,16 +372,25 @@ async function api(url, options = {}) {
 
 async function loadStore() {
   try {
+    const selectedCheckoutArea = $("#areaSelect")?.value || "";
+    const selectedLookupArea = $("#deliveryLookupSelect")?.value || "";
     state.store = await api("/api/store");
     $("#brandName").textContent = state.store.restaurant_name || "BROOST";
     $("#footerBrandName").textContent = state.store.restaurant_name || "BROOST";
     $("#storeStatus").textContent = state.store.ordering_enabled ? "● نستقبل طلبات الآن" : "الطلبات متوقفة مؤقتًا";
     $("#storeStatus").className = `badge ${state.store.ordering_enabled ? "badge-success" : "badge-danger"}`;
+    $("#storeClosedBanner").hidden = state.store.ordering_enabled;
     $("#walletChoiceBtn").disabled = !state.store.wallet_available;
     if (!state.store.wallet_available && state.payment === "WALLET") state.payment = "CASH";
     renderCategories();
     renderProducts();
     renderAreas();
+    if ([...$("#areaSelect").options].some((option) => option.value === selectedCheckoutArea && !option.disabled)) {
+      $("#areaSelect").value = selectedCheckoutArea;
+    }
+    if ([...$("#deliveryLookupSelect").options].some((option) => option.value === selectedLookupArea)) {
+      $("#deliveryLookupSelect").value = selectedLookupArea;
+    }
     renderStoreInfo();
     renderReviews();
     renderCart();
@@ -387,10 +468,12 @@ function addOfferToCart(offerId) {
 }
 
 function renderAreas() {
-  const options = state.store.areas.map((area) => `
+  const checkoutOptions = state.store.areas.map((area) => `
+    <option value="${area.id}" ${area.delivery_enabled ? "" : "disabled"}>${escapeHtml(area.name)}${area.delivery_enabled ? "" : " — التوصيل متوقف"}</option>`).join("");
+  const lookupOptions = state.store.areas.map((area) => `
     <option value="${area.id}">${escapeHtml(area.name)}</option>`).join("");
-  $("#areaSelect").innerHTML = `<option value="">اختر القرية</option>${options}`;
-  $("#deliveryLookupSelect").innerHTML = `<option value="">اختار القرية</option>${options}`;
+  $("#areaSelect").innerHTML = `<option value="">اختر القرية</option>${checkoutOptions}`;
+  $("#deliveryLookupSelect").innerHTML = `<option value="">اختار القرية</option>${lookupOptions}`;
   if (!state.store.areas.length) {
     $("#deliveryLookupResult").textContent = "لم تتم إضافة قرى للتوصيل بعد.";
     $("#deliveryLookupResult").className = "lookup-result muted";
@@ -511,12 +594,16 @@ function updateCheckoutTotals() {
   const subtotal = cartSubtotal();
   const fee = currentDeliveryFee();
   renderLoyalty();
-  const discount = state.redeemReward && rewardCanApply() ? subtotal : 0;
+  const discount = rewardDiscount();
   $("#checkoutSubtotal").textContent = money(subtotal);
   $("#checkoutDiscountRow").hidden = !discount;
   $("#checkoutDiscount").textContent = `− ${money(discount)}`;
   $("#checkoutDelivery").textContent = fee === null ? "اختر القرية" : fee ? money(fee) : "لا يوجد";
   $("#checkoutTotal").textContent = money(subtotal - discount + (fee || 0));
+  const submit = $("#submitOrderBtn");
+  const canOrder = Boolean(state.store.ordering_enabled);
+  submit.disabled = !canOrder;
+  submit.textContent = canOrder ? "تأكيد الطلب" : "المطعم مقفول حاليًا";
   renderCartPointsProgress();
   localStorage.setItem("broost_fulfillment", state.fulfillment);
   localStorage.setItem("broost_payment", state.payment);
@@ -538,6 +625,10 @@ function openCheckout() {
 
 async function submitOrder() {
   $("#checkoutError").textContent = "";
+  if (!state.store?.ordering_enabled) {
+    $("#checkoutError").textContent = "المطعم مقفول حاليًا. المنيو محفوظة عندك وتقدر تطلب أول ما الكاشير يفتح.";
+    return;
+  }
   const name = $("#customerName").value.trim();
   const phone = $("#customerPhone").value.trim();
   const areaId = $("#areaSelect").value;
@@ -545,6 +636,8 @@ async function submitOrder() {
   $("#customerAddress").value = address;
   if (!name || !phone) return void ($("#checkoutError").textContent = "اكتب الاسم ورقم الموبايل.");
   if (state.fulfillment === "DELIVERY" && (!areaId || !address)) return void ($("#checkoutError").textContent = "اختيار القرية وكتابة العنوان بالتفصيل إجباريان للدليفري.");
+  const selectedArea = state.store.areas.find((area) => String(area.id) === String(areaId));
+  if (state.fulfillment === "DELIVERY" && !selectedArea?.delivery_enabled) return void ($("#checkoutError").textContent = "التوصيل للقرية المختارة متوقف حاليًا.");
   if (!state.cart.length) return void ($("#checkoutError").textContent = "السلة فاضية.");
 
   const button = $("#submitOrderBtn");
@@ -567,7 +660,8 @@ async function submitOrder() {
         area_id: state.fulfillment === "DELIVERY" ? Number(areaId) : null,
         detailed_address: state.fulfillment === "DELIVERY" ? address : "",
         notes: $("#orderNotes").value.trim(),
-        redeem_reward: state.redeemReward,
+        redeem_reward: false,
+        reward_code: state.rewardApplied?.code || "",
         items: state.cart.map((line) => ({
           item_id: line.offerId ? null : line.itemId,
           offer_id: line.offerId || null,
@@ -583,17 +677,21 @@ async function submitOrder() {
     localStorage.removeItem("broost_client_request_id");
     state.order = order;
     state.loyalty = order.loyalty || state.loyalty;
-    state.redeemReward = false;
+    state.rewardCode = "";
+    state.rewardApplied = null;
+    $("#rewardCodeInput").value = "";
+    $("#rewardCodeStatus").textContent = "";
     state.cart = [];
     persistCart();
     renderOrder();
     showView("tracking");
     $("#resumeOrderBtn").hidden = false;
+    loadCustomerOrders(false);
   } catch (error) {
     $("#checkoutError").textContent = error.message;
   } finally {
-    button.disabled = false;
-    button.textContent = "تأكيد الطلب";
+    button.disabled = !state.store?.ordering_enabled;
+    button.textContent = state.store?.ordering_enabled ? "تأكيد الطلب" : "المطعم مقفول حاليًا";
   }
 }
 
@@ -646,6 +744,8 @@ function renderOrder() {
     renderLoginState();
   }
   const loyaltyMessages = [];
+  if (order.reward?.code && status === "CANCELLED") loyaltyMessages.push(`كود ${order.reward.code} رجع متاح في حسابك.`);
+  else if (order.reward?.code) loyaltyMessages.push(`استخدمت كود ${order.reward.code} وخصمت ${money(order.discount)} من المنتجات.`);
   if (Number(loyalty.points_redeemed || 0) && status !== "CANCELLED") loyaltyMessages.push(`استخدمت ${Number(loyalty.points_redeemed)} نقطة في مكافأة الأوردر.`);
   if (status === "COMPLETED" && Number(loyalty.points_earned || 0)) loyaltyMessages.push(`اتضاف لك ${Number(loyalty.points_earned)} نقطة.`);
   else if (!["COMPLETED", "CANCELLED"].includes(status) && Number(loyalty.pending_points || 0)) loyaltyMessages.push(`بعد استلام الطلب هتكسب ${Number(loyalty.pending_points)} نقطة.`);
@@ -684,7 +784,9 @@ async function cancelOrder() {
       method: "POST",
     });
     state.loyalty = state.order.loyalty || state.loyalty;
+    state.accountLoyalty = state.loyalty;
     renderOrder();
+    loadCustomerOrders(false);
   } catch (error) {
     $("#cancelOrderError").textContent = error.message;
   } finally {
@@ -704,6 +806,62 @@ async function resumeOrder() {
   } catch {
     localStorage.removeItem("broost_active_order");
     $("#resumeOrderBtn").hidden = true;
+  }
+}
+
+function customerOrderStatus(order) {
+  const status = order.status === "ACCEPTED" ? "PREPARING" : order.status;
+  return {
+    NEW: "تم إرسال الطلب",
+    PREPARING: "جاري التجهيز",
+    READY: "جاهز للاستلام",
+    DISPATCHED: "خرج للتوصيل",
+    COMPLETED: "تم التسليم",
+    CANCELLED: "ملغي",
+  }[status] || status;
+}
+
+function renderCustomerOrders() {
+  const list = $("#customerOrdersList");
+  list.innerHTML = state.orders.length ? state.orders.map((order) => `
+    <button class="customer-order-card" data-open-order="${escapeHtml(order.resume_token)}">
+      <span class="customer-order-main"><strong>${escapeHtml(order.public_number)}</strong><small>${new Date(order.created_at).toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" })}</small></span>
+      <span class="customer-order-meta"><span class="badge ${order.status === "CANCELLED" ? "badge-danger" : order.status === "COMPLETED" ? "badge-success" : "badge-brand"}">${customerOrderStatus(order)}</span><strong>${money(order.total)}</strong></span>
+    </button>`).join("") : `<div class="empty-state">لسه مفيش طلبات مسجلة بالرقم ده.</div>`;
+}
+
+async function loadCustomerOrders(openModal = false) {
+  if (!state.loggedPhone) {
+    state.openOrdersAfterLogin = true;
+    openLoginModal();
+    return;
+  }
+  $("#ordersError").textContent = "";
+  try {
+    const result = await api(`/api/customer/orders?phone=${encodeURIComponent(state.loggedPhone)}`);
+    state.orders = result.orders || [];
+    state.accountLoyalty = result.loyalty || state.accountLoyalty;
+    if (state.accountLoyalty) state.loyalty = state.accountLoyalty;
+    renderLoginState();
+    renderCustomerOrders();
+    if (openModal) $("#ordersModal").hidden = false;
+  } catch (error) {
+    $("#ordersError").textContent = error.message;
+    if (openModal) $("#ordersModal").hidden = false;
+  }
+}
+
+async function openOrderFromHistory(token) {
+  try {
+    state.order = await api(`/api/orders/${encodeURIComponent(token)}`);
+    localStorage.setItem("broost_active_order", token);
+    history.replaceState(null, "", `/?order=${encodeURIComponent(token)}`);
+    $("#ordersModal").hidden = true;
+    $("#resumeOrderBtn").hidden = false;
+    renderOrder();
+    showView("tracking");
+  } catch (error) {
+    $("#ordersError").textContent = error.message;
   }
 }
 
@@ -823,10 +981,6 @@ $("#areaSelect").addEventListener("change", () => {
   );
   updateCheckoutTotals();
 });
-$("#redeemReward").addEventListener("change", (event) => {
-  state.redeemReward = event.target.checked && rewardCanApply();
-  updateCheckoutTotals();
-});
 $("#customerPhone").addEventListener("input", () => {
   clearTimeout(state.loyaltyTimer);
   state.loyaltyTimer = setTimeout(loadLoyalty, 350);
@@ -839,14 +993,47 @@ $("#deliveryLookupSelect").addEventListener("change", (event) => {
     result.className = "lookup-result";
     return;
   }
-  result.innerHTML = `التوصيل إلى <strong>${escapeHtml(area.name)}</strong> بـ <strong>${money(area.delivery_fee)}</strong>`;
-  result.className = "lookup-result has-value";
+  result.innerHTML = area.delivery_enabled
+    ? `التوصيل إلى <strong>${escapeHtml(area.name)}</strong> بـ <strong>${money(area.delivery_fee)}</strong>`
+    : `التوصيل إلى <strong>${escapeHtml(area.name)}</strong> متوقف مؤقتًا · الرسوم المعتادة <strong>${money(area.delivery_fee)}</strong>`;
+  result.className = `lookup-result has-value ${area.delivery_enabled ? "" : "is-paused"}`;
 });
 $("#headerOrderBtn").addEventListener("click", scrollToMenu);
 $("#heroOrderBtn").addEventListener("click", scrollToMenu);
 $("#loginBtn").addEventListener("click", openLoginModal);
+$("#ordersBtn").addEventListener("click", () => loadCustomerOrders(true));
+$("#closeOrdersModal").addEventListener("click", () => { $("#ordersModal").hidden = true; });
+$("#customerOrdersList").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-open-order]");
+  if (button) openOrderFromHistory(button.dataset.openOrder);
+});
 $("#closeLoginModal").addEventListener("click", () => { $("#loginModal").hidden = true; });
 $("#loginSubmitBtn").addEventListener("click", submitPhoneLogin);
+$("#generateRewardCodeBtn").addEventListener("click", generateRewardCode);
+$("#rewardCodesList").addEventListener("click", async (event) => {
+  const copy = event.target.closest("[data-copy-reward]");
+  const use = event.target.closest("[data-use-reward]");
+  if (copy) {
+    await navigator.clipboard.writeText(copy.dataset.copyReward);
+    copy.textContent = "تم النسخ";
+  }
+  if (use) {
+    $("#loginModal").hidden = true;
+    $("#rewardCodeInput").value = use.dataset.useReward;
+    await applyRewardCode(use.dataset.useReward);
+    if (state.cart.length) openCheckout();
+  }
+});
+$("#applyRewardCodeBtn").addEventListener("click", () => applyRewardCode());
+$("#rewardCodeInput").addEventListener("input", (event) => {
+  event.target.value = event.target.value.toUpperCase();
+  if (state.rewardApplied?.code !== event.target.value.trim()) {
+    state.rewardApplied = null;
+    state.rewardCode = "";
+    $("#rewardCodeStatus").textContent = "";
+    updateCheckoutTotals();
+  }
+});
 $("#loginPhone").addEventListener("keydown", (event) => {
   if (event.key === "Enter") submitPhoneLogin();
 });
@@ -894,6 +1081,7 @@ loadStore().then(async () => {
     }
     renderLoginState();
     saveCustomerDraft();
+    await loadCustomerOrders(false);
   }
   updateCheckoutTotals();
   if (!state.loggedPhone) loadLoyalty();
@@ -912,3 +1100,7 @@ setInterval(async () => {
     renderOrder();
   } catch { /* keep the last known state */ }
 }, 10000);
+
+setInterval(() => {
+  if (!document.hidden) loadStore();
+}, 30000);

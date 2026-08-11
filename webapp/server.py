@@ -15,7 +15,7 @@ import sqlite3
 import sys
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Literal
@@ -61,6 +61,8 @@ CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 LOYALTY_REWARD_POINTS = 100
 LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
+LOYALTY_REWARD_CODE_VALUE = Decimal("150")
+POS_HEARTBEAT_TIMEOUT_SECONDS = 30
 
 ORDER_STATUS_TRANSITIONS = {
     "NEW": {"PREPARING", "CANCELLED"},
@@ -142,6 +144,7 @@ def init_web_db() -> None:
                 name TEXT NOT NULL UNIQUE,
                 delivery_fee REAL NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                delivery_enabled INTEGER NOT NULL DEFAULT 1,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
@@ -239,6 +242,7 @@ def init_web_db() -> None:
                 transfer_phone_suffix TEXT,
                 cashier_name TEXT,
                 driver_name TEXT,
+                reward_code TEXT,
                 loyalty_points_earned INTEGER NOT NULL DEFAULT 0,
                 loyalty_points_redeemed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -301,6 +305,20 @@ def init_web_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS reward_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                phone_normalized TEXT NOT NULL,
+                value REAL NOT NULL DEFAULT 150,
+                points_cost INTEGER NOT NULL DEFAULT 100,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                reserved_order_id INTEGER,
+                used_order_id INTEGER,
+                created_at TEXT NOT NULL,
+                reserved_at TEXT,
+                used_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS loyalty_transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone_normalized TEXT NOT NULL,
@@ -317,6 +335,7 @@ def init_web_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_order_events_id ON order_events(id);
             CREATE INDEX IF NOT EXISTS idx_customer_issues_phone ON customer_issues(phone_normalized, is_resolved);
             CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_phone ON loyalty_transactions(phone_normalized, created_at);
+            CREATE INDEX IF NOT EXISTS idx_reward_codes_phone ON reward_codes(phone_normalized, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_offer_items_offer ON offer_items(offer_sync_id);
             """
         if USING_POSTGRES:
@@ -341,6 +360,13 @@ def init_web_db() -> None:
             conn.execute("ALTER TABLE orders ADD COLUMN proof_delete_url TEXT")
         if "proof_storage_id" not in order_columns:
             conn.execute("ALTER TABLE orders ADD COLUMN proof_storage_id TEXT")
+        if "reward_code" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN reward_code TEXT")
+        area_columns = table_columns(conn, "delivery_areas")
+        if "delivery_enabled" not in area_columns:
+            conn.execute(
+                "ALTER TABLE delivery_areas ADD COLUMN delivery_enabled INTEGER NOT NULL DEFAULT 1"
+            )
         menu_item_columns = table_columns(conn, "menu_items")
         if "is_daily_offer" not in menu_item_columns:
             conn.execute("ALTER TABLE menu_items ADD COLUMN is_daily_offer INTEGER NOT NULL DEFAULT 0")
@@ -453,6 +479,11 @@ def loyalty_profile(conn: sqlite3.Connection, phone: str | None) -> dict[str, An
     ).fetchone() if normalized else None
     balance = int(row["points_balance"] or 0) if row else 0
     lifetime = int(row["lifetime_points"] or 0) if row else 0
+    reward_codes = [dict(code) for code in conn.execute(
+        "SELECT code, value, points_cost, created_at FROM reward_codes "
+        "WHERE phone_normalized=? AND status='ACTIVE' ORDER BY id DESC",
+        (normalized,),
+    ).fetchall()] if normalized else []
     return {
         "points": balance,
         "lifetime_points": lifetime,
@@ -460,7 +491,27 @@ def loyalty_profile(conn: sqlite3.Connection, phone: str | None) -> dict[str, An
         "points_to_reward": max(0, LOYALTY_REWARD_POINTS - balance),
         "reward_cost": LOYALTY_REWARD_POINTS,
         "reward_max_subtotal": float(LOYALTY_REWARD_MAX_SUBTOTAL),
+        "reward_code_value": float(LOYALTY_REWARD_CODE_VALUE),
+        "reward_codes": reward_codes,
     }
+
+
+def cashier_is_online(conn: sqlite3.Connection) -> bool:
+    """Treat the hosted restaurant as open only while the desktop is checking in."""
+    if APP_ENV != "production":
+        return True
+    last_seen = setting(conn, "pos_last_seen_at", "")
+    if not last_seen:
+        return False
+    try:
+        seen_at = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - seen_at).total_seconds() <= POS_HEARTBEAT_TIMEOUT_SECONDS
+
+
+def ordering_is_available(conn: sqlite3.Connection) -> bool:
+    return setting(conn, "ordering_enabled", "1") == "1" and cashier_is_online(conn)
 
 
 def adjust_loyalty_account(
@@ -516,6 +567,21 @@ def reconcile_order_loyalty(conn: sqlite3.Connection, order_id: int) -> None:
     phone = order["customer_phone_normalized"] or normalize_phone(order["customer_phone"])
     if not phone:
         return
+
+    reward_code = str(order["reward_code"] or "").strip()
+    if reward_code:
+        if order["status"] == "CANCELLED":
+            conn.execute(
+                "UPDATE reward_codes SET status='ACTIVE', reserved_order_id=NULL, reserved_at=NULL "
+                "WHERE code=? AND status='RESERVED' AND reserved_order_id=?",
+                (reward_code, order_id),
+            )
+        elif order["status"] == "COMPLETED":
+            conn.execute(
+                "UPDATE reward_codes SET status='USED', used_order_id=?, used_at=? "
+                "WHERE code=? AND status='RESERVED' AND reserved_order_id=?",
+                (order_id, utc_now(), reward_code, order_id),
+            )
 
     paid = order["payment_method"] == "CASH" or order["payment_status"] == "CONFIRMED"
     should_earn = order["status"] == "COMPLETED" and paid
@@ -651,8 +717,9 @@ def require_admin(x_admin_key: str = Header(default="")) -> None:
 def require_sync(x_sync_key: str = Header(default="")) -> None:
     with db_connection() as conn:
         expected = setting(conn, "sync_key", "broost-local-sync")
-    if not secrets.compare_digest(x_sync_key, expected):
-        raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
+        if not secrets.compare_digest(x_sync_key, expected):
+            raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
+        set_setting(conn, "pos_last_seen_at", utc_now())
 
 
 class OrderItemInput(BaseModel):
@@ -675,6 +742,11 @@ class CreateOrderInput(BaseModel):
     notes: str = Field(default="", max_length=500)
     items: list[OrderItemInput] = Field(min_length=1, max_length=80)
     redeem_reward: bool = False
+    reward_code: str = Field(default="", max_length=40)
+
+
+class RewardCodeInput(BaseModel):
+    phone: str = Field(min_length=7, max_length=30)
 
 
 class ProofInput(BaseModel):
@@ -688,6 +760,7 @@ class AreaInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     delivery_fee: float = Field(ge=0, le=100000)
     is_active: bool = True
+    delivery_enabled: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
 
 
@@ -695,6 +768,7 @@ class AreaUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     delivery_fee: float | None = Field(default=None, ge=0, le=100000)
     is_active: bool | None = None
+    delivery_enabled: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=10000)
 
 
@@ -942,6 +1016,19 @@ def order_to_dict(conn: sqlite3.Connection, order_row: sqlite3.Row) -> dict[str,
         ),
     })
     data["loyalty"] = profile
+    reward_code = str(data.get("reward_code") or "").strip()
+    if reward_code:
+        reward = conn.execute(
+            "SELECT code, value, status FROM reward_codes WHERE code=?",
+            (reward_code,),
+        ).fetchone()
+        data["reward"] = dict(reward) if reward else {
+            "code": reward_code,
+            "value": float(data.get("discount") or 0),
+            "status": "UNKNOWN",
+        }
+    else:
+        data["reward"] = None
     data.pop("proof_filename", None)
     data.pop("proof_url", None)
     data.pop("proof_delete_url", None)
@@ -1027,7 +1114,7 @@ def health() -> dict[str, str]:
 def store_snapshot() -> dict[str, Any]:
     with db_connection() as conn:
         areas = [dict(row) for row in conn.execute(
-            "SELECT id, name, delivery_fee, sort_order FROM delivery_areas "
+            "SELECT id, name, delivery_fee, delivery_enabled, sort_order FROM delivery_areas "
             "WHERE is_active=1 ORDER BY sort_order, name"
         )]
         menu = read_menu(conn)
@@ -1059,10 +1146,12 @@ def store_snapshot() -> dict[str, Any]:
             "SELECT id, customer_name, review_text, rating FROM reviews "
             "WHERE is_visible=1 ORDER BY sort_order, id DESC"
         ).fetchall()]
+        cashier_online = cashier_is_online(conn)
         return {
             "restaurant_name": setting(conn, "restaurant_name", "Broost"),
             "wallet_available": bool(setting(conn, "wallet_number", "").strip()),
-            "ordering_enabled": setting(conn, "ordering_enabled", "1") == "1",
+            "ordering_enabled": ordering_is_available(conn),
+            "cashier_online": cashier_online,
             "business_hours": setting(conn, "business_hours", ""),
             "branch_address": setting(conn, "branch_address", ""),
             "contact_phone": setting(conn, "contact_phone", ""),
@@ -1106,6 +1195,54 @@ def public_loyalty(phone: str = Query(min_length=7, max_length=30)) -> dict[str,
         return result
 
 
+@app.post("/api/loyalty/reward-codes")
+def create_reward_code(payload: RewardCodeInput) -> dict[str, Any]:
+    normalized = normalize_phone(payload.phone)
+    if not re.fullmatch(r"01[0125][0-9]{8}", normalized):
+        raise HTTPException(status_code=422, detail="اكتب رقم موبايل مصري صحيح")
+    now = utc_now()
+    code = f"BROOST-{secrets.token_hex(6).upper()}"
+    with db_connection(immediate=True) as conn:
+        adjust_loyalty_account(conn, normalized, 0)
+        reserved = conn.execute(
+            "UPDATE loyalty_accounts SET points_balance=points_balance-?, updated_at=? "
+            "WHERE phone_normalized=? AND points_balance>=?",
+            (LOYALTY_REWARD_POINTS, now, normalized, LOYALTY_REWARD_POINTS),
+        )
+        if reserved.rowcount != 1:
+            raise HTTPException(status_code=409, detail="رصيد النقاط أقل من 100 نقطة")
+        try:
+            conn.execute(
+                "INSERT INTO reward_codes "
+                "(code, phone_normalized, value, points_cost, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'ACTIVE', ?)",
+                (
+                    code, normalized, float(LOYALTY_REWARD_CODE_VALUE),
+                    LOYALTY_REWARD_POINTS, now,
+                ),
+            )
+        except (sqlite3.IntegrityError, DatabaseIntegrityError):
+            raise HTTPException(status_code=409, detail="تعذر إنشاء الكود؛ حاول مرة أخرى")
+        return loyalty_profile(conn, normalized)
+
+
+@app.get("/api/customer/orders")
+def public_customer_orders(phone: str = Query(min_length=7, max_length=30)) -> dict[str, Any]:
+    normalized = normalize_phone(phone)
+    if not re.fullmatch(r"01[0125][0-9]{8}", normalized):
+        raise HTTPException(status_code=422, detail="اكتب رقم موبايل مصري صحيح")
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE source='ONLINE' AND customer_phone_normalized=? "
+            "ORDER BY created_at DESC, id DESC LIMIT 50",
+            (normalized,),
+        ).fetchall()
+        return {
+            "orders": [public_order_to_dict(conn, row) for row in rows],
+            "loyalty": loyalty_profile(conn, normalized),
+        }
+
+
 @app.post("/api/orders")
 def create_order(payload: CreateOrderInput) -> JSONResponse:
     with db_connection(immediate=True) as conn:
@@ -1115,8 +1252,11 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
         if existing:
             return JSONResponse(public_order_to_dict(conn, existing), status_code=200)
 
-        if setting(conn, "ordering_enabled", "1") != "1":
-            raise HTTPException(status_code=409, detail="المطعم لا يستقبل طلبات جديدة حاليًا")
+        if not ordering_is_available(conn):
+            raise HTTPException(
+                status_code=409,
+                detail="المطعم مغلق حاليًا. تقدر تشوف المنيو والأسعار وترجع تطلب وقت ما الكاشير يفتح.",
+            )
 
         customer_name = payload.customer_name.strip()
         customer_phone_normalized = normalize_phone(payload.customer_phone)
@@ -1133,11 +1273,12 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
             if not payload.area_id:
                 raise HTTPException(status_code=422, detail="اختيار القرية إجباري للدليفري")
             area = conn.execute(
-                "SELECT id, name, delivery_fee FROM delivery_areas WHERE id=? AND is_active=1",
+                "SELECT id, name, delivery_fee FROM delivery_areas "
+                "WHERE id=? AND is_active=1 AND delivery_enabled=1",
                 (payload.area_id,),
             ).fetchone()
             if not area:
-                raise HTTPException(status_code=409, detail="القرية المختارة غير متاحة حاليًا")
+                raise HTTPException(status_code=409, detail="التوصيل للقرية المختارة متوقف حاليًا")
             area_id = area["id"]
             area_name = area["name"]
             delivery_fee = float(area["delivery_fee"])
@@ -1250,7 +1391,20 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
         delivery_fee = round(delivery_fee, 2)
         discount = 0.0
         redeemed_points = 0
-        if payload.redeem_reward:
+        normalized_reward_code = payload.reward_code.strip().upper()
+        if normalized_reward_code:
+            reward = conn.execute(
+                "SELECT code, value FROM reward_codes WHERE code=? AND phone_normalized=? "
+                "AND status='ACTIVE'",
+                (normalized_reward_code, customer_phone_normalized),
+            ).fetchone()
+            if not reward:
+                raise HTTPException(
+                    status_code=409,
+                    detail="كود المكافأة غير صحيح أو مستخدم أو لا يخص رقم الموبايل ده",
+                )
+            discount = min(subtotal, float(reward["value"]))
+        elif payload.redeem_reward:
             if Decimal(str(subtotal)) > LOYALTY_REWARD_MAX_SUBTOTAL:
                 raise HTTPException(
                     status_code=409,
@@ -1278,18 +1432,27 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
                 resume_token, client_request_id, source, fulfillment, customer_name,
                 customer_phone, customer_phone_normalized, area_id, area_name, detailed_address, payment_method,
                 payment_status, status, subtotal, delivery_fee, discount, total, notes,
-                loyalty_points_redeemed, created_at, updated_at
-            ) VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?)
+                loyalty_points_redeemed, reward_code, created_at, updated_at
+            ) VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 token, payload.client_request_id, payload.fulfillment,
                 customer_name, payload.customer_phone.strip(),
                 customer_phone_normalized, area_id,
                 area_name, address, payload.payment_method, payment_status, subtotal,
-                delivery_fee, discount, total, payload.notes.strip(), redeemed_points, now, now,
+                delivery_fee, discount, total, payload.notes.strip(), redeemed_points,
+                normalized_reward_code or None, now, now,
             ),
         )
         order_id = cursor.lastrowid
+        if normalized_reward_code:
+            code_reservation = conn.execute(
+                "UPDATE reward_codes SET status='RESERVED', reserved_order_id=?, reserved_at=? "
+                "WHERE code=? AND phone_normalized=? AND status='ACTIVE'",
+                (order_id, now, normalized_reward_code, customer_phone_normalized),
+            )
+            if code_reservation.rowcount != 1:
+                raise HTTPException(status_code=409, detail="كود المكافأة لم يعد متاحًا")
         if redeemed_points:
             reserve = conn.execute(
                 "UPDATE loyalty_accounts SET points_balance=points_balance-?, updated_at=? "
@@ -1597,9 +1760,13 @@ def create_admin_area(payload: AreaInput) -> dict[str, Any]:
     with db_connection() as conn:
         try:
             cursor = conn.execute(
-                "INSERT INTO delivery_areas (name, delivery_fee, is_active, sort_order, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (payload.name.strip(), payload.delivery_fee, int(payload.is_active), payload.sort_order, utc_now()),
+                "INSERT INTO delivery_areas "
+                "(name, delivery_fee, is_active, delivery_enabled, sort_order, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    payload.name.strip(), payload.delivery_fee, int(payload.is_active),
+                    int(payload.delivery_enabled), payload.sort_order, utc_now(),
+                ),
             )
         except (sqlite3.IntegrityError, DatabaseIntegrityError):
             raise HTTPException(status_code=409, detail="اسم القرية موجود بالفعل")
@@ -1615,6 +1782,8 @@ def update_admin_area(area_id: int, payload: AreaUpdate) -> dict[str, Any]:
         changes["name"] = changes["name"].strip()
     if "is_active" in changes:
         changes["is_active"] = int(changes["is_active"])
+    if "delivery_enabled" in changes:
+        changes["delivery_enabled"] = int(changes["delivery_enabled"])
     changes["updated_at"] = utc_now()
     assignments = ", ".join(f"{key}=?" for key in changes)
     with db_connection() as conn:

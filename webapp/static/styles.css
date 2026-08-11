@@ -780,6 +780,12 @@ th { color: var(--muted); background: #fafafa; font-size: 13px; }
 .points-strip strong { font-size: 14px; }
 .login-btn { border-color: #e8bd52; background: #fff8df; white-space: nowrap; }
 .login-btn.is-logged-in { color: #6d4500; background: #ffe9a7; }
+.orders-btn { position: relative; white-space: nowrap; }
+.orders-btn svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.orders-btn b { position: absolute; top: -6px; left: -5px; min-width: 20px; height: 20px; padding: 1px 5px; color: #fff; background: var(--brand); border: 2px solid #fff; border-radius: 999px; font-size: 10px; line-height: 14px; }
+
+.store-closed-banner { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px 18px; color: #713b00; background: #fff1cf; border-bottom: 1px solid #efcf86; text-align: center; }
+.store-closed-banner span { color: #835f2e; font-size: 13px; }
 
 .points-progress-card {
   display: grid;
@@ -802,6 +808,30 @@ th { color: var(--muted); background: #fafafa; font-size: 13px; }
 .login-modal .modal-head p { margin: 7px 0 0; line-height: 1.6; }
 .simple-close { position: static; flex: 0 0 auto; color: var(--ink); background: #f4f0ec; border-color: #e1d7ce; backdrop-filter: none; }
 .login-points-preview { padding: 12px 14px; color: #684700; background: #fff6d8; border: 1px solid #eed184; border-radius: 12px; font-weight: 800; }
+
+.reward-code-entry { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; gap: 8px !important; min-width: min(330px, 100%); }
+.reward-code-entry .input { direction: ltr; text-align: left; font-weight: 900; letter-spacing: .7px; }
+.reward-code-status { grid-column: 1 / -1; margin: 0; color: #745f3a; font-size: 12px; font-weight: 800; }
+.reward-code-status.is-success { color: var(--success); }
+.reward-code-status.is-error { color: var(--danger); }
+.reward-wallet { display: grid; gap: 12px; padding: 15px; background: #fff9e7; border: 1px solid #edd28d; border-radius: 15px; }
+.reward-wallet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reward-wallet-head > div { display: grid; gap: 4px; }
+.reward-wallet-head small { color: #765f35; line-height: 1.5; }
+.reward-code-list { display: grid; gap: 8px; }
+.reward-code-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; background: #fff; border: 1px solid #ead8aa; border-radius: 12px; }
+.reward-code-card > span:first-child { display: grid; gap: 3px; }
+.reward-code-card small { color: #766344; }
+.reward-code-card strong { color: var(--brand-dark); letter-spacing: .8px; }
+
+.orders-modal { width: min(620px, 100%); }
+.customer-orders-list { display: grid; gap: 10px; max-height: min(62vh, 620px); overflow-y: auto; }
+.customer-order-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 14px; color: var(--ink); background: #fff; border: 1px solid #e8ded5; border-radius: 14px; text-align: right; }
+.customer-order-card:hover { border-color: #dfa7b0; background: #fffafb; }
+.customer-order-main, .customer-order-meta { display: grid; gap: 6px; }
+.customer-order-main small { color: var(--muted); }
+.customer-order-meta { justify-items: end; }
+.lookup-result.is-paused { color: #7a4800; background: #fff7df; border-color: #e8c978; }
 
 @media (max-width: 900px) {
   .hero { min-height: 330px; }
@@ -827,6 +857,15 @@ th { color: var(--muted); background: #fafafa; font-size: 13px; }
   .brand strong { font-size: 18px; }
   .resume-order-btn { min-height: 38px; padding: 7px 11px; font-size: 13px; }
   .login-btn { min-height: 38px; padding: 7px 10px; font-size: 12px; }
+  .orders-btn { min-width: 40px; min-height: 38px; padding: 7px 9px; }
+  .orders-btn > span { display: none; }
+  .store-closed-banner { align-items: flex-start; flex-direction: column; gap: 2px; padding: 9px 12px; text-align: right; }
+  .reward-code-entry { grid-template-columns: 1fr; width: 100%; }
+  .reward-wallet-head, .reward-code-card { align-items: stretch; flex-direction: column; }
+  .reward-code-card .inline-actions { width: 100%; }
+  .reward-code-card .inline-actions .btn { flex: 1; }
+  .customer-order-card { align-items: stretch; flex-direction: column; }
+  .customer-order-meta { grid-template-columns: 1fr auto; justify-items: start; align-items: center; }
   .container { width: min(100% - 24px, 1180px); }
   .hero {
     min-height: 342px;
