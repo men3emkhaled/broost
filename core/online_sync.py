@@ -47,6 +47,7 @@ class OnlineSyncManager(QObject):
         super().__init__(parent)
         self._busy_lock = threading.Lock()
         self._last_connected: bool | None = None
+        self._last_connection_message = ""
         self._last_orders_push = 0.0
 
     def poll(self) -> None:
@@ -126,6 +127,93 @@ class OnlineSyncManager(QObject):
         sync_key = settings.get("web_sync_key", "broost-local-sync").strip()
         return base_url, sync_key
 
+    @staticmethod
+    def check_connection(base_url: str, sync_key: str, timeout: int = 10) -> dict[str, Any]:
+        """Diagnose server reachability, credentials and the sync endpoint separately."""
+        base_url = (base_url or "").strip().rstrip("/")
+        sync_key = (sync_key or "").strip()
+        result: dict[str, Any] = {
+            "server_ok": False,
+            "key_ok": False,
+            "sync_ok": False,
+            "message": "",
+            "http_status": None,
+            "menu_version": 0,
+            "categories": 0,
+            "items": 0,
+        }
+        if not base_url or not sync_key:
+            result["message"] = "رابط السيرفر ومفتاح المزامنة مطلوبان."
+            return result
+
+        def request(path: str, authenticated: bool = False) -> tuple[int | None, Any, str]:
+            headers = {"Accept": "application/json"}
+            if authenticated:
+                headers["X-Sync-Key"] = sync_key
+            web_request = urllib.request.Request(
+                f"{base_url}{path}", method="GET", headers=headers
+            )
+            try:
+                with urllib.request.urlopen(web_request, timeout=timeout) as response:
+                    raw = response.read()
+                    payload = json.loads(raw.decode("utf-8")) if raw else {}
+                    return response.status, payload, ""
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                try:
+                    detail = str(json.loads(raw).get("detail", raw))
+                except json.JSONDecodeError:
+                    detail = raw
+                return exc.code, None, detail.strip()
+            except urllib.error.URLError:
+                return None, None, "تعذر الوصول إلى السيرفر."
+            except Exception as exc:
+                return None, None, str(exc)
+
+        health_status, health, health_detail = request("/health")
+        if health_status != 200 or not isinstance(health, dict) or health.get("status") != "ok":
+            result["http_status"] = health_status
+            result["message"] = health_detail or "السيرفر لا يستجيب بشكل صحيح."
+            return result
+        result["server_ok"] = True
+
+        sync_status, menu, sync_detail = request("/api/sync/menu", authenticated=True)
+        result["http_status"] = sync_status
+        if sync_status in (401, 403):
+            result["message"] = "السيرفر متصل، لكن مفتاح المزامنة غير صحيح."
+            return result
+        if sync_status is not None and sync_status >= 500:
+            # The authentication dependency runs before the endpoint, so a 5xx
+            # here means the supplied key was accepted and the backend failed.
+            result["key_ok"] = True
+            result["message"] = (
+                f"السيرفر متصل والمفتاح صحيح، لكن مسار المزامنة به خطأ داخلي (HTTP {sync_status}). "
+                "انشر أحدث نسخة من Railway ثم أعد الفحص."
+            )
+            return result
+        if sync_status != 200 or not isinstance(menu, dict):
+            result["message"] = sync_detail or "السيرفر متصل لكن مسار المزامنة لم يستجب."
+            return result
+
+        result.update(
+            key_ok=True,
+            sync_ok=True,
+            menu_version=int(menu.get("version", 0) or 0),
+            categories=len(menu.get("categories", [])),
+            items=len(menu.get("items", [])),
+        )
+        if result["categories"] or result["items"]:
+            result["message"] = (
+                f"الاتصال والمزامنة يعملان — {result['categories']} تصنيف و"
+                f" {result['items']} صنف على الموقع."
+            )
+        else:
+            result["message"] = (
+                "الاتصال والمفتاح صحيحان، والمنيو على السيرفر فارغة حاليًا. "
+                "اضغط «حفظ ومزامنة الآن» لرفع بيانات الكاشير."
+            )
+        return result
+
     def _request_json(
         self,
         path: str,
@@ -154,7 +242,13 @@ class OnlineSyncManager(QObject):
                 detail = json.loads(raw).get("detail", raw)
             except json.JSONDecodeError:
                 detail = raw
-            raise RuntimeError(str(detail) or f"HTTP {exc.code}") from exc
+            if exc.code in (401, 403):
+                message = "مفتاح المزامنة غير صحيح"
+            elif exc.code >= 500:
+                message = f"السيرفر متصل لكن المزامنة بها خطأ داخلي (HTTP {exc.code})"
+            else:
+                message = str(detail) or f"HTTP {exc.code}"
+            raise RuntimeError(message) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError("السيرفر غير متاح") from exc
 
@@ -169,8 +263,9 @@ class OnlineSyncManager(QObject):
             return response.read()
 
     def _set_connected(self, connected: bool, message: str) -> None:
-        if connected != self._last_connected:
+        if connected != self._last_connected or message != self._last_connection_message:
             self._last_connected = connected
+            self._last_connection_message = message
             self.connectivity_changed.emit(connected, message)
         elif not connected:
             self.sync_error.emit(message)

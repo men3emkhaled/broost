@@ -498,6 +498,14 @@ def seed_reference_data(conn):
             ])
         conn.commit()
 
+    # Reference rows are seeded after the schema migration above. Give newly
+    # seeded rows stable sync identifiers before the first website sync.
+    cursor.execute("UPDATE categories SET sync_id='category-' || id WHERE sync_id IS NULL OR sync_id=''")
+    cursor.execute("UPDATE menu_items SET sync_id='item-' || id WHERE sync_id IS NULL OR sync_id=''")
+    cursor.execute("UPDATE menu_item_sizes SET sync_id='size-' || id WHERE sync_id IS NULL OR sync_id=''")
+    cursor.execute("UPDATE menu_item_extras SET sync_id='extra-' || id WHERE sync_id IS NULL OR sync_id=''")
+    conn.commit()
+
     # Seed Drivers
     cursor.execute("SELECT COUNT(*) FROM drivers")
     if cursor.fetchone()[0] == 0:

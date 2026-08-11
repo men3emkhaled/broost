@@ -4,7 +4,7 @@ import os
 
 ROOT = os.path.dirname(os.path.abspath(SPEC))
 
-static_files = ["styles.css", "index.html", "customer.js", "admin.html", "admin.js"]
+static_files = ["styles.css", "index.html", "customer.js", "admin.html", "admin.js", "config.js"]
 image_files = [
     "hero-food-v1.webp",
     "category-chicken-v1.webp",

@@ -41,6 +41,7 @@ from webapp.db import (
     connect_database,
     table_columns,
 )
+from webapp.phone_validation import valid_egyptian_mobile
 
 
 if getattr(sys, "frozen", False):
@@ -1166,9 +1167,12 @@ def store_snapshot() -> dict[str, Any]:
 
 @app.get("/api/loyalty")
 def public_loyalty(phone: str = Query(min_length=7, max_length=30)) -> dict[str, Any]:
-    normalized = normalize_phone(phone)
-    if not normalized:
-        raise HTTPException(status_code=422, detail="رقم الموبايل غير صالح")
+    if not valid_egyptian_mobile(phone):
+        raise HTTPException(
+            status_code=422,
+            detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
+        )
+    normalized = phone.strip()
     with db_connection() as conn:
         result = loyalty_profile(conn, normalized)
         identity = conn.execute(
@@ -1197,9 +1201,12 @@ def public_loyalty(phone: str = Query(min_length=7, max_length=30)) -> dict[str,
 
 @app.post("/api/loyalty/reward-codes")
 def create_reward_code(payload: RewardCodeInput) -> dict[str, Any]:
-    normalized = normalize_phone(payload.phone)
-    if not re.fullmatch(r"01[0125][0-9]{8}", normalized):
-        raise HTTPException(status_code=422, detail="اكتب رقم موبايل مصري صحيح")
+    if not valid_egyptian_mobile(payload.phone):
+        raise HTTPException(
+            status_code=422,
+            detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
+        )
+    normalized = payload.phone.strip()
     now = utc_now()
     code = f"BROOST-{secrets.token_hex(6).upper()}"
     with db_connection(immediate=True) as conn:
@@ -1228,9 +1235,12 @@ def create_reward_code(payload: RewardCodeInput) -> dict[str, Any]:
 
 @app.get("/api/customer/orders")
 def public_customer_orders(phone: str = Query(min_length=7, max_length=30)) -> dict[str, Any]:
-    normalized = normalize_phone(phone)
-    if not re.fullmatch(r"01[0125][0-9]{8}", normalized):
-        raise HTTPException(status_code=422, detail="اكتب رقم موبايل مصري صحيح")
+    if not valid_egyptian_mobile(phone):
+        raise HTTPException(
+            status_code=422,
+            detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
+        )
+    normalized = phone.strip()
     with db_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM orders WHERE source='ONLINE' AND customer_phone_normalized=? "
@@ -1259,11 +1269,14 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
             )
 
         customer_name = payload.customer_name.strip()
-        customer_phone_normalized = normalize_phone(payload.customer_phone)
+        customer_phone_normalized = payload.customer_phone.strip()
         if len(customer_name) < 2:
             raise HTTPException(status_code=422, detail="اسم العميل غير صالح")
-        if not re.fullmatch(r"01[0125][0-9]{8}", customer_phone_normalized):
-            raise HTTPException(status_code=422, detail="اكتب رقم موبايل مصري صحيح")
+        if not valid_egyptian_mobile(customer_phone_normalized):
+            raise HTTPException(
+                status_code=422,
+                detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
+            )
 
         area_id = None
         area_name = ""

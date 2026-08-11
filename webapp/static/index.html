@@ -159,7 +159,7 @@
             <h3 class="step-title customer-step"><span>2</span> بيانات الطلب</h3>
             <div class="form-grid" style="margin-top:16px">
               <div class="field"><label for="customerName">الاسم *</label><input class="input" id="customerName" autocomplete="name"></div>
-              <div class="field"><label for="customerPhone">رقم الموبايل *</label><input class="input" id="customerPhone" inputmode="tel" autocomplete="tel"></div>
+              <div class="field"><label for="customerPhone">رقم الموبايل *</label><input class="input" id="customerPhone" inputmode="numeric" autocomplete="tel-national" maxlength="11" minlength="11" pattern="01[0125][0-9]{8}" placeholder="01xxxxxxxxx" dir="ltr"></div>
               <div class="field field-full loyalty-checkout" id="loyaltyCheckout">
                 <div><span class="eyebrow">مكافآت بروست</span><strong id="loyaltyBalanceText">اكتب رقم الموبايل لمعرفة رصيدك</strong><small id="loyaltyHint">حوّل كل 100 نقطة لكود خصم بقيمة 150 جنيه على المنتجات.</small></div>
                 <div class="reward-code-entry">
@@ -253,7 +253,7 @@
     <section class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
       <header class="modal-head"><div><span class="eyebrow">نقط بروست</span><h2 id="loginModalTitle">ادخل برقم موبايلك</h2><p class="muted">هنرجّع اسمك وعنوانك ورصيد نقاطك تلقائيًا، وتقدر تعدّل البيانات قبل الطلب.</p></div><button class="modal-close simple-close" id="closeLoginModal" aria-label="إغلاق">×</button></header>
       <div class="modal-body">
-        <div class="field"><label for="loginPhone">رقم الموبايل</label><input class="input" id="loginPhone" inputmode="tel" autocomplete="tel" placeholder="01xxxxxxxxx" dir="ltr"></div>
+        <div class="field"><label for="loginPhone">رقم الموبايل</label><input class="input" id="loginPhone" inputmode="numeric" autocomplete="tel-national" maxlength="11" minlength="11" pattern="01[0125][0-9]{8}" placeholder="01xxxxxxxxx" dir="ltr"></div>
         <div class="login-points-preview" id="loginPointsPreview" hidden></div>
         <section class="reward-wallet" id="rewardWallet" hidden>
           <div class="reward-wallet-head"><div><strong>حوّل نقاطك لكود</strong><small>100 نقطة = خصم حتى 150 جنيه على المنتجات، والتوصيل يتحسب منفصل.</small></div><button class="btn btn-primary" id="generateRewardCodeBtn" type="button">إنشاء كود</button></div>
@@ -288,6 +288,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/customer.js?v=20260811-2" defer></script>
+  <script src="/assets/customer.js?v=20260811-3" defer></script>
 </body>
 </html>

@@ -5,6 +5,7 @@ import sys
 import json
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -3878,36 +3879,154 @@ class MainPOSDashboard(QMainWindow):
         form.addRow("", enabled_input)
         layout.addLayout(form)
 
+        status_card = QFrame(dialog)
+        status_card.setObjectName("SyncCheckCard")
+        status_layout = QVBoxLayout(status_card)
+        status_layout.setContentsMargins(14, 12, 14, 12)
+        status_layout.setSpacing(5)
+        status_title = QLabel("حالة الاتصال", status_card)
+        status_title.setStyleSheet("font-size: 13px; font-weight: 900; color: #2f2525;")
+        status_label = QLabel("اضغط «فحص الاتصال» للتأكد من السيرفر والمفتاح والمزامنة.", status_card)
+        status_label.setWordWrap(True)
+        status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        status_layout.addWidget(status_title)
+        status_layout.addWidget(status_label)
+        layout.addWidget(status_card)
+
+        def set_check_style(kind, text):
+            colors = {
+                "idle": ("#f8fafc", "#cbd5e1", "#475569"),
+                "loading": ("#eff6ff", "#93c5fd", "#1d4ed8"),
+                "success": ("#ecfdf3", "#86efac", "#166534"),
+                "warning": ("#fff7ed", "#fdba74", "#9a3412"),
+                "error": ("#fff1f2", "#fda4af", "#9f1239"),
+            }
+            background, border, foreground = colors[kind]
+            status_card.setStyleSheet(
+                "QFrame#SyncCheckCard {"
+                f"background: {background}; border: 1px solid {border}; border-radius: 12px;"
+                "}"
+                f"QFrame#SyncCheckCard QLabel {{ color: {foreground}; border: none; background: transparent; }}"
+            )
+            status_label.setText(text)
+
         buttons = QHBoxLayout()
         cancel = QPushButton("تراجع", dialog)
         cancel.setObjectName("BtnDark")
         cancel.clicked.connect(dialog.reject)
-        save = QPushButton("حفظ وتجربة الاتصال", dialog)
-        save.clicked.connect(dialog.accept)
+        check = QPushButton("فحص الاتصال", dialog)
+        check.setObjectName("BtnDark")
+        save = QPushButton("حفظ ومزامنة الآن", dialog)
         buttons.addWidget(cancel)
+        buttons.addWidget(check)
         buttons.addWidget(save)
         layout.addLayout(buttons)
 
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        server_url = server_input.text().strip().rstrip("/")
-        sync_key = key_input.text().strip()
-        if not server_url or not sync_key:
-            QMessageBox.warning(self, "بيانات ناقصة", "رابط السيرفر ومفتاح المزامنة مطلوبان.")
-            return
-        conn = database.get_connection()
-        conn.executemany(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            [
-                ("web_server_url", server_url),
-                ("web_sync_key", sync_key),
-                ("web_sync_enabled", "1" if enabled_input.isChecked() else "0"),
-            ],
-        )
-        conn.commit()
-        conn.close()
-        if hasattr(self, "online_sync"):
-            self.online_sync.poll()
+        check_state = {"running": False, "result": None, "save_after": False}
+        check_timer = QTimer(dialog)
+        check_timer.setInterval(100)
+
+        def connection_values():
+            return server_input.text().strip().rstrip("/"), key_input.text().strip()
+
+        def save_settings():
+            server_url, sync_key = connection_values()
+            conn = database.get_connection()
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                    [
+                        ("web_server_url", server_url),
+                        ("web_sync_key", sync_key),
+                        ("web_sync_enabled", "1" if enabled_input.isChecked() else "0"),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        def render_check_result(result):
+            server_line = "✅ السيرفر متصل" if result.get("server_ok") else "❌ السيرفر غير متاح"
+            if result.get("server_ok"):
+                key_line = "✅ مفتاح المزامنة صحيح" if result.get("key_ok") else "❌ مفتاح المزامنة غير صحيح"
+            else:
+                key_line = "— لم يتم فحص المفتاح"
+            sync_line = "✅ مسار المزامنة يعمل" if result.get("sync_ok") else "❌ المزامنة لم تكتمل"
+            text = "\n".join((server_line, key_line, sync_line, "", result.get("message", "")))
+            if result.get("sync_ok"):
+                kind = "success" if result.get("categories") or result.get("items") else "warning"
+            elif result.get("server_ok") and result.get("key_ok"):
+                kind = "warning"
+            else:
+                kind = "error"
+            set_check_style(kind, text)
+
+        def finish_check():
+            result = check_state.get("result")
+            if result is None:
+                return
+            check_timer.stop()
+            check_state["running"] = False
+            check_state["result"] = None
+            check.setEnabled(True)
+            save.setEnabled(True)
+            server_input.setEnabled(True)
+            key_input.setEnabled(True)
+            enabled_input.setEnabled(True)
+            render_check_result(result)
+            if check_state.get("save_after") and result.get("sync_ok"):
+                save_settings()
+                dialog.accept()
+                if hasattr(self, "online_sync"):
+                    self.online_sync.poll()
+                QMessageBox.information(
+                    self,
+                    "تم الربط",
+                    "تم حفظ الإعدادات وبدأت مزامنة المنيو والطلبات في الخلفية.",
+                )
+
+        check_timer.timeout.connect(finish_check)
+
+        def begin_check(save_after=False):
+            if check_state["running"]:
+                return
+            server_url, sync_key = connection_values()
+            if not server_url or not sync_key:
+                set_check_style("error", "رابط السيرفر ومفتاح المزامنة مطلوبان.")
+                return
+            if save_after and not enabled_input.isChecked():
+                save_settings()
+                dialog.accept()
+                if hasattr(self, "online_sync"):
+                    self.online_sync.poll()
+                return
+            check_state.update(running=True, result=None, save_after=save_after)
+            set_check_style("loading", "⏳ جاري فحص السيرفر والمفتاح ومسار المزامنة...")
+            check.setEnabled(False)
+            save.setEnabled(False)
+            server_input.setEnabled(False)
+            key_input.setEnabled(False)
+            enabled_input.setEnabled(False)
+
+            def worker():
+                try:
+                    check_state["result"] = OnlineSyncManager.check_connection(
+                        server_url, sync_key
+                    )
+                except Exception as exc:
+                    check_state["result"] = {
+                        "server_ok": False,
+                        "key_ok": False,
+                        "sync_ok": False,
+                        "message": f"تعذر إكمال الفحص: {exc}",
+                    }
+
+            threading.Thread(target=worker, daemon=True, name="web-sync-check").start()
+            check_timer.start()
+
+        check.clicked.connect(lambda: begin_check(False))
+        save.clicked.connect(lambda: begin_check(True))
+        dialog.exec()
 
     def open_manage_passwords_dialog(self):
         """Unified Dialog to manage all system and shift passwords/pins with a touch numeric keypad."""
@@ -4449,9 +4568,18 @@ class MainPOSDashboard(QMainWindow):
             self.lbl_online_sync.setText("● متزامن أونلاين")
             self.lbl_online_sync.setProperty("connected", True)
         else:
-            self.lbl_online_sync.setText("● الموقع غير متصل")
+            normalized = str(message or "")
+            if "مزامنة الموقع متوقفة" in normalized:
+                status_text = "● المزامنة متوقفة"
+            elif "مفتاح المزامنة" in normalized:
+                status_text = "● مفتاح المزامنة خطأ"
+            elif "خطأ داخلي" in normalized:
+                status_text = "● السيرفر متصل - خطأ مزامنة"
+            else:
+                status_text = "● الموقع غير متصل"
+            self.lbl_online_sync.setText(status_text)
             self.lbl_online_sync.setProperty("connected", False)
-            self.lbl_online_sync.setToolTip(message)
+        self.lbl_online_sync.setToolTip(str(message or ""))
         self.lbl_online_sync.style().unpolish(self.lbl_online_sync)
         self.lbl_online_sync.style().polish(self.lbl_online_sync)
 

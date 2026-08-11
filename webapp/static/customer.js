@@ -24,6 +24,22 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const money = (value) => `${Number(value || 0).toLocaleString("ar-EG")} جنيه`;
 const API_BASE_URL = String(window.BROOST_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
 const apiUrl = (url) => /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url}`;
+const EGYPTIAN_MOBILE_PATTERN = /^01[0125][0-9]{8}$/;
+const PHONE_VALIDATION_MESSAGE = "رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015.";
+
+function cleanEgyptianMobileInput(value) {
+  return String(value || "").replace(/[^0-9]/g, "").slice(0, 11);
+}
+
+function validEgyptianMobile(value) {
+  return EGYPTIAN_MOBILE_PATTERN.test(String(value || "").trim());
+}
+
+state.loggedPhone = cleanEgyptianMobileInput(state.loggedPhone);
+if (!validEgyptianMobile(state.loggedPhone)) {
+  state.loggedPhone = "";
+  localStorage.removeItem("broost_logged_phone");
+}
 
 function cleanCategoryName(name) {
   return String(name || "").replace(/^\s*[0-9٠-٩]+\s*[.\-–—)]*\s*/, "").trim();
@@ -158,8 +174,8 @@ function renderRewardWallet() {
 }
 
 async function loadLoyalty() {
-  const phone = $("#customerPhone").value.trim();
-  if (phone.replace(/\D/g, "").length < 7) {
+  const phone = cleanEgyptianMobileInput($("#customerPhone").value);
+  if (!validEgyptianMobile(phone)) {
     state.loyalty = null;
     renderLoyalty();
     updateCheckoutTotals();
@@ -237,9 +253,10 @@ function openLoginModal() {
 }
 
 async function submitPhoneLogin() {
-  const phone = $("#loginPhone").value.trim();
-  if (phone.replace(/\D/g, "").length < 7) {
-    $("#loginError").textContent = "اكتب رقم موبايل صحيح.";
+  const phone = cleanEgyptianMobileInput($("#loginPhone").value);
+  $("#loginPhone").value = phone;
+  if (!validEgyptianMobile(phone)) {
+    $("#loginError").textContent = PHONE_VALIDATION_MESSAGE;
     return;
   }
   const button = $("#loginSubmitBtn");
@@ -629,11 +646,13 @@ async function submitOrder() {
     return;
   }
   const name = $("#customerName").value.trim();
-  const phone = $("#customerPhone").value.trim();
+  const phone = cleanEgyptianMobileInput($("#customerPhone").value);
+  $("#customerPhone").value = phone;
   const areaId = $("#areaSelect").value;
   const address = stripAreaPrefix($("#customerAddress").value, selectedAreaName());
   $("#customerAddress").value = address;
   if (!name || !phone) return void ($("#checkoutError").textContent = "اكتب الاسم ورقم الموبايل.");
+  if (!validEgyptianMobile(phone)) return void ($("#checkoutError").textContent = PHONE_VALIDATION_MESSAGE);
   if (state.fulfillment === "DELIVERY" && (!areaId || !address)) return void ($("#checkoutError").textContent = "اختيار القرية وكتابة العنوان بالتفصيل إجباريان للدليفري.");
   const selectedArea = state.store.areas.find((area) => String(area.id) === String(areaId));
   if (state.fulfillment === "DELIVERY" && !selectedArea?.delivery_enabled) return void ($("#checkoutError").textContent = "التوصيل للقرية المختارة متوقف حاليًا.");
@@ -980,7 +999,8 @@ $("#areaSelect").addEventListener("change", () => {
   );
   updateCheckoutTotals();
 });
-$("#customerPhone").addEventListener("input", () => {
+$("#customerPhone").addEventListener("input", (event) => {
+  event.target.value = cleanEgyptianMobileInput(event.target.value);
   clearTimeout(state.loyaltyTimer);
   state.loyaltyTimer = setTimeout(loadLoyalty, 350);
 });
@@ -1035,6 +1055,10 @@ $("#rewardCodeInput").addEventListener("input", (event) => {
 });
 $("#loginPhone").addEventListener("keydown", (event) => {
   if (event.key === "Enter") submitPhoneLogin();
+});
+$("#loginPhone").addEventListener("input", (event) => {
+  event.target.value = cleanEgyptianMobileInput(event.target.value);
+  $("#loginError").textContent = "";
 });
 $$('.site-nav a').forEach((link) => link.addEventListener("click", (event) => {
   event.preventDefault();

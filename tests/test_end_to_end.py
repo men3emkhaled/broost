@@ -40,10 +40,29 @@ class BroostEndToEndTest(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="broost-e2e-")
         cls.temp_path = Path(cls.temp.name)
         cls.local_db = cls.temp_path / "pos.db"
-        shutil.copy2(database.DB_PATH, cls.local_db)
         cls.original_db_path = database.DB_PATH
+        if Path(database.DB_PATH).exists():
+            shutil.copy2(database.DB_PATH, cls.local_db)
         database.DB_PATH = str(cls.local_db)
         database.init_db()
+
+        # A clean checkout intentionally contains no restaurant database. Seed
+        # one deterministic item so the end-to-end sync tests do not depend on
+        # developer or production data being present on disk.
+        fixture = database.get_connection()
+        if not fixture.execute("SELECT 1 FROM menu_items LIMIT 1").fetchone():
+            category_id = fixture.execute(
+                "INSERT INTO categories (name, sort_order, sync_id) VALUES (?, ?, ?)",
+                ("اختبار", 1, "test-category"),
+            ).lastrowid
+            fixture.execute(
+                "INSERT INTO menu_items "
+                "(category_id, name, base_price, is_available, is_popular, is_daily_offer, sync_id) "
+                "VALUES (?, ?, ?, 1, 1, 0, ?)",
+                (category_id, "وجبة اختبار", 100, "test-item"),
+            )
+            fixture.commit()
+        fixture.close()
 
         # The source database may already contain real online orders. Keep this
         # smoke test deterministic by clearing them only from its temporary copy.
@@ -102,6 +121,7 @@ class BroostEndToEndTest(unittest.TestCase):
         conn.commit()
         conn.close()
         cls.qt_app = QCoreApplication.instance() or QCoreApplication([])
+        OnlineSyncManager()._sync_menu()
 
     @classmethod
     def tearDownClass(cls):
@@ -131,6 +151,22 @@ class BroostEndToEndTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             raw = response.read()
             return json.loads(raw.decode("utf-8")) if raw else {}
+
+    def test_connection_check_reports_server_key_and_sync_separately(self):
+        base_url = f"http://127.0.0.1:{self.port}"
+
+        connected = OnlineSyncManager.check_connection(
+            base_url, "broost-local-sync"
+        )
+        self.assertTrue(connected["server_ok"])
+        self.assertTrue(connected["key_ok"])
+        self.assertTrue(connected["sync_ok"])
+
+        wrong_key = OnlineSyncManager.check_connection(base_url, "wrong-key")
+        self.assertTrue(wrong_key["server_ok"])
+        self.assertFalse(wrong_key["key_ok"])
+        self.assertFalse(wrong_key["sync_ok"])
+        self.assertIn("مفتاح المزامنة", wrong_key["message"])
 
     def test_customer_orders_arrive_in_local_pos(self):
         manager = OnlineSyncManager()
