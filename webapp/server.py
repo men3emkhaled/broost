@@ -419,6 +419,7 @@ def init_web_db() -> None:
             "facebook_url": "",
             "admin_password": os.getenv("BROOST_ADMIN_PASSWORD", "9999"),
             "sync_key": os.getenv("BROOST_SYNC_KEY", "broost-local-sync"),
+            "sync_epoch": secrets.token_hex(16),
             "menu_version": "0",
             "menu_updated_at": utc_now(),
         }
@@ -963,18 +964,16 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
     cancelled = int(stats["cancelled_orders"] or 0)
     open_issues = int(issues["open_issues"] or 0)
     last_terminal_status = latest_terminal["status"] if latest_terminal else None
-    if open_issues or last_terminal_status == "CANCELLED":
-        order_mood = "ANGRY"
-    elif last_terminal_status == "COMPLETED":
+    if completed >= 1:
         order_mood = "HAPPY"
+    elif open_issues or last_terminal_status == "CANCELLED":
+        order_mood = "ANGRY"
     else:
         order_mood = "NEUTRAL"
-    if open_issues:
-        status, label = "NEEDS_CONFIRMATION", "يحتاج تأكيد"
-    elif completed >= 5:
+    if completed >= 1:
         status, label = "RELIABLE", "موثوق"
-    elif completed >= 2:
-        status, label = "REGULAR", "منتظم"
+    elif open_issues or last_terminal_status == "CANCELLED":
+        status, label = "NEEDS_CONFIRMATION", "يحتاج تأكيد"
     else:
         status, label = "NEW", "عميل جديد"
     return {
@@ -2332,6 +2331,11 @@ def sync_post_menu(payload: SyncMenuInput) -> dict[str, Any]:
 @app.get("/api/sync/events", dependencies=[Depends(require_sync)])
 def sync_events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
     with db_connection() as conn:
+        sync_epoch = setting(conn, "sync_epoch", "")
+        server_last_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS last_id FROM order_events"
+        ).fetchone()
+        server_last_event_id = int(server_last_row["last_id"] if server_last_row else 0)
         rows = conn.execute(
             "SELECT * FROM order_events WHERE id>? ORDER BY id LIMIT 200", (after,)
         ).fetchall()
@@ -2342,7 +2346,12 @@ def sync_events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
             order = conn.execute("SELECT * FROM orders WHERE id=?", (row["order_id"],)).fetchone()
             event["order"] = order_to_dict(conn, order) if order else None
             events.append(event)
-        return {"events": events, "last_event_id": events[-1]["id"] if events else after}
+        return {
+            "events": events,
+            "last_event_id": events[-1]["id"] if events else min(after, server_last_event_id),
+            "server_last_event_id": server_last_event_id,
+            "sync_epoch": sync_epoch,
+        }
 
 
 @app.patch("/api/sync/orders/{order_id}", dependencies=[Depends(require_sync)])

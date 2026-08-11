@@ -49,6 +49,7 @@ class OnlineSyncManager(QObject):
         self._last_connected: bool | None = None
         self._last_connection_message = ""
         self._last_orders_push = 0.0
+        self._last_cursor_probe = 0.0
 
     def poll(self) -> None:
         if self._busy_lock.locked():
@@ -509,7 +510,43 @@ class OnlineSyncManager(QObject):
 
     def _pull_events(self) -> None:
         last_event_id = int(self._setting("web_last_event_id", "0") or 0)
+        local_epoch = self._setting("web_sync_epoch", "")
         result = self._request_json(f"/api/sync/events?after={last_event_id}")
+        remote_epoch = str(result.get("sync_epoch") or "")
+        server_last_event_id = result.get("server_last_event_id")
+        cursor_reset = False
+
+        epoch_changed = bool(remote_epoch and remote_epoch != local_epoch)
+        cursor_ahead = (
+            server_last_event_id is not None
+            and int(server_last_event_id or 0) < last_event_id
+        )
+        if epoch_changed or cursor_ahead:
+            result = self._request_json("/api/sync/events?after=0")
+            remote_epoch = str(result.get("sync_epoch") or remote_epoch)
+            cursor_reset = True
+        elif (
+            not remote_epoch
+            and last_event_id > 0
+            and not result.get("events")
+            and time.monotonic() - self._last_cursor_probe >= 300
+        ):
+            # Compatibility with an older backend that did not expose an epoch.
+            # A restored/replaced database can restart event IDs from 1 while the
+            # cashier still remembers a larger cursor from the previous database.
+            self._last_cursor_probe = time.monotonic()
+            probe = self._request_json("/api/sync/events?after=0")
+            probe_last = int(
+                probe.get("server_last_event_id", probe.get("last_event_id", 0)) or 0
+            )
+            if probe_last < last_event_id:
+                result = probe
+                remote_epoch = str(probe.get("sync_epoch") or "")
+                cursor_reset = True
+
+        if remote_epoch and remote_epoch != local_epoch:
+            self._set_setting("web_sync_epoch", remote_epoch)
+
         events = result.get("events", [])
         latest_by_order: dict[int, dict[str, Any]] = {}
         for event in events:
@@ -534,6 +571,8 @@ class OnlineSyncManager(QObject):
 
         if events:
             self._set_setting("web_last_event_id", int(result.get("last_event_id", last_event_id)))
+        elif cursor_reset:
+            self._set_setting("web_last_event_id", int(result.get("last_event_id", 0) or 0))
 
     @staticmethod
     def _local_timestamp(value: str | None) -> str | None:

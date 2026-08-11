@@ -168,6 +168,55 @@ class BroostEndToEndTest(unittest.TestCase):
         self.assertFalse(wrong_key["sync_ok"])
         self.assertIn("مفتاح المزامنة", wrong_key["message"])
 
+    def test_event_cursor_recovers_after_backend_database_replacement(self):
+        item = self.request("/api/store")["menu"]["items"][0]
+        order = self.request(
+            "/api/orders",
+            "POST",
+            {
+                "client_request_id": "cursor-reset-request",
+                "fulfillment": "PICKUP",
+                "payment_method": "CASH",
+                "customer_name": "عميل اختبار",
+                "customer_phone": "01012131415",
+                "area_id": None,
+                "detailed_address": "",
+                "notes": "",
+                "items": [{"item_id": item["sync_id"], "quantity": 1}],
+            },
+        )
+        remote_order = next(
+            row
+            for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == order["public_number"]
+        )
+        remote_id = int(remote_order["id"])
+
+        conn = database.get_connection()
+        conn.executemany(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            [("web_last_event_id", "999"), ("web_sync_epoch", "old-database")],
+        )
+        conn.execute("DELETE FROM orders WHERE remote_id=?", (remote_id,))
+        conn.commit()
+        conn.close()
+
+        OnlineSyncManager()._pull_events()
+
+        conn = database.get_connection()
+        imported = conn.execute(
+            "SELECT public_number FROM orders WHERE remote_id=?", (remote_id,)
+        ).fetchone()
+        settings = dict(
+            conn.execute(
+                "SELECT key, value FROM settings WHERE key IN ('web_last_event_id', 'web_sync_epoch')"
+            ).fetchall()
+        )
+        conn.close()
+        self.assertEqual(imported[0], order["public_number"])
+        self.assertLess(int(settings["web_last_event_id"]), 999)
+        self.assertNotEqual(settings["web_sync_epoch"], "old-database")
+
     def test_customer_orders_arrive_in_local_pos(self):
         manager = OnlineSyncManager()
         received = []
@@ -437,7 +486,7 @@ class BroostEndToEndTest(unittest.TestCase):
             )
 
         profile = self.request(f"/api/admin/customers/{phone}", admin=True)
-        self.assertEqual(profile["reliability"]["status"], "REGULAR")
+        self.assertEqual(profile["reliability"]["status"], "RELIABLE")
         self.assertEqual(profile["reliability"]["completed_orders"], 2)
 
         issue_result = self.request(
@@ -446,7 +495,7 @@ class BroostEndToEndTest(unittest.TestCase):
             {"issue_type": "UNREACHABLE", "note": "اختبار تنبيه يدوي"},
             admin=True,
         )
-        self.assertEqual(issue_result["reliability"]["status"], "NEEDS_CONFIRMATION")
+        self.assertEqual(issue_result["reliability"]["status"], "RELIABLE")
         issue_id = issue_result["issues"][0]["id"]
         resolved = self.request(
             f"/api/admin/customer-issues/{issue_id}",
@@ -454,7 +503,7 @@ class BroostEndToEndTest(unittest.TestCase):
             {"is_resolved": True},
             admin=True,
         )
-        self.assertEqual(resolved["reliability"]["status"], "REGULAR")
+        self.assertEqual(resolved["reliability"]["status"], "RELIABLE")
 
         returned = self.request(
             "/api/orders",
@@ -507,7 +556,7 @@ class BroostEndToEndTest(unittest.TestCase):
             if row["public_number"] == after_return["public_number"]
         )
         self.assertEqual(
-            after_return_remote["customer_reliability"]["order_mood"], "ANGRY"
+            after_return_remote["customer_reliability"]["order_mood"], "HAPPY"
         )
 
         review = self.request(

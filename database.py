@@ -284,6 +284,7 @@ def init_db():
                      ("web_sync_enabled", "1"),
                      ("web_server_url", "http://127.0.0.1:8765"),
                      ("web_sync_key", "broost-local-sync"),
+                     ("web_sync_epoch", ""),
                      ("web_last_event_id", "0"),
                      ("web_menu_version", "0"),
                      ("web_menu_fingerprint", ""),

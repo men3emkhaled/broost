@@ -455,6 +455,8 @@ class VirtualKeyboardWidget(QWidget):
 
 class MainPOSDashboard(QMainWindow):
     """Main Restaurant checkout dashboard window."""
+
+    online_order_action_finished = pyqtSignal(str, object, object)
     
     RESIZE_MARGIN = 8  # pixels from edge to trigger resize cursor
     
@@ -559,6 +561,8 @@ class MainPOSDashboard(QMainWindow):
         # cashier operations when the internet is unavailable.
         self._online_alert_queue = []
         self._online_alert_open = False
+        self._online_order_actions = set()
+        self.online_order_action_finished.connect(self._finish_online_order_action)
         self.online_sync = OnlineSyncManager(self)
         self.online_sync.connectivity_changed.connect(self.update_online_sync_status)
         self.online_sync.order_received.connect(self.handle_online_order_received)
@@ -4667,35 +4671,12 @@ class MainPOSDashboard(QMainWindow):
         changes = {"status": "PREPARING", "cashier_name": config.ACTIVE_CASHIER_NAME}
         if payment_status:
             changes["payment_status"] = payment_status
-        try:
-            self.online_sync.update_remote_order_now(remote_id, **changes)
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "تعذر قبول الطلب على الموقع",
-                "لم يتم قبول الطلب أو طباعته حتى تظل حالته والدفع متطابقين.\n"
-                f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{exc}",
-            )
-            return
-
-        conn = database.get_connection()
-        conn.execute(
-            "UPDATE orders SET online_status='PREPARING', payment_status=?, "
-            "shift_id=COALESCE(shift_id, ?) WHERE id=?",
-            (payment_status, config.ACTIVE_SHIFT_ID, local_order_id),
+        self._start_online_order_action(
+            "accept",
+            remote_id,
+            changes,
+            {"local_order_id": local_order_id, "payment_status": payment_status},
         )
-        conn.commit()
-        conn.close()
-
-        cashier_receipt = self.generate_receipt_text(local_order_id, "نسخة الكاشير")
-        kitchen_receipt = self.generate_receipt_text(local_order_id, "نسخة المطبخ")
-        if config.PRINTER_ONLINE:
-            print_text_to_printer(cashier_receipt, self)
-            print_text_to_printer(kitchen_receipt, self)
-        else:
-            ReceiptSimDialog(local_order_id, cashier_receipt, kitchen_receipt, self).exec()
-
-        self.load_pending_delivery_orders()
 
     def _reject_online_order(self, order):
         local_order_id = order.get("local_order_id")
@@ -4712,21 +4693,81 @@ class MainPOSDashboard(QMainWindow):
                 "رقم مزامنة الطلب غير موجود. لم يتم رفضه حتى لا تتأثر نقاط العميل.",
             )
             return
-        try:
-            self.online_sync.update_remote_order_now(
-                remote_id,
-                status="CANCELLED",
-                cashier_name=config.ACTIVE_CASHIER_NAME,
-            )
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "تعذر رفض الطلب على الموقع",
-                "لم يتم رفض الطلب محليًا حتى لا تضيع نقاط العميل.\n"
-                f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{exc}",
-            )
+        self._start_online_order_action(
+            "reject",
+            remote_id,
+            {"status": "CANCELLED", "cashier_name": config.ACTIVE_CASHIER_NAME},
+            {"local_order_id": local_order_id},
+        )
+
+    def _start_online_order_action(self, action, remote_id, changes, context):
+        """Run the strict remote-first accept/reject step without freezing Qt."""
+        action_key = (action, int(remote_id))
+        if action_key in self._online_order_actions:
             return
-        if local_order_id:
+        self._online_order_actions.add(action_key)
+        action_label = "قبول" if action == "accept" else "رفض"
+        if hasattr(self, "lbl_online_sync"):
+            self.lbl_online_sync.setText(f"● جاري {action_label} الطلب...")
+            self.lbl_online_sync.setToolTip("يتم تحديث الموقع أولًا لحماية حالة الطلب والنقاط.")
+
+        action_context = dict(context)
+        action_context.update(remote_id=int(remote_id), action_key=action_key)
+
+        def worker():
+            error = None
+            try:
+                self.online_sync.update_remote_order_now(int(remote_id), **changes)
+            except Exception as exc:
+                error = str(exc)
+            self.online_order_action_finished.emit(action, action_context, error)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name=f"online-order-{action}-{remote_id}",
+        ).start()
+
+    def _finish_online_order_action(self, action, context, error):
+        """Complete local accounting and printing on the Qt thread after Railway replies."""
+        self._online_order_actions.discard(context.get("action_key"))
+        if error:
+            if action == "accept":
+                title = "تعذر قبول الطلب على الموقع"
+                message = (
+                    "لم يتم قبول الطلب أو طباعته حتى تظل حالته والدفع متطابقين.\n"
+                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
+                )
+            else:
+                title = "تعذر رفض الطلب على الموقع"
+                message = (
+                    "لم يتم رفض الطلب محليًا حتى لا تضيع نقاط العميل.\n"
+                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
+                )
+            QMessageBox.critical(self, title, message)
+            self.online_sync.poll()
+            return
+
+        local_order_id = context.get("local_order_id")
+        if action == "accept":
+            payment_status = context.get("payment_status")
+            conn = database.get_connection()
+            conn.execute(
+                "UPDATE orders SET online_status='PREPARING', payment_status=?, "
+                "shift_id=COALESCE(shift_id, ?) WHERE id=?",
+                (payment_status, config.ACTIVE_SHIFT_ID, local_order_id),
+            )
+            conn.commit()
+            conn.close()
+
+            cashier_receipt = self.generate_receipt_text(local_order_id, "نسخة الكاشير")
+            kitchen_receipt = self.generate_receipt_text(local_order_id, "نسخة المطبخ")
+            if config.PRINTER_ONLINE:
+                print_text_to_printer(cashier_receipt, self)
+                print_text_to_printer(kitchen_receipt, self)
+            else:
+                ReceiptSimDialog(local_order_id, cashier_receipt, kitchen_receipt, self).exec()
+        elif local_order_id:
             conn = database.get_connection()
             conn.execute(
                 "UPDATE orders SET status='CANCELLED', online_status='CANCELLED', closed_at=? WHERE id=?",
@@ -4734,7 +4775,9 @@ class MainPOSDashboard(QMainWindow):
             )
             conn.commit()
             conn.close()
+
         self.load_pending_delivery_orders()
+        self.online_sync.poll()
 
     def trigger_osk(self):
         import os

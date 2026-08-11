@@ -370,6 +370,7 @@ function renderCartPointsProgress() {
 }
 
 function showView(name) {
+  document.body.dataset.view = name;
   $("#menuView").hidden = name !== "menu";
   $("#checkoutView").hidden = name !== "checkout";
   $("#trackingView").hidden = name !== "tracking";
@@ -924,13 +925,11 @@ function escapeHtml(text) {
 }
 
 function saveCustomerDraft() {
-  const cleanAddress = stripAreaPrefix($("#customerAddress").value, selectedAreaName());
-  if ($("#customerAddress").value !== cleanAddress) $("#customerAddress").value = cleanAddress;
   localStorage.setItem("broost_customer_draft", JSON.stringify({
     name: $("#customerName").value,
     phone: $("#customerPhone").value,
     area: $("#areaSelect").value,
-    address: cleanAddress,
+    address: $("#customerAddress").value,
     notes: $("#orderNotes").value,
   }));
 }
