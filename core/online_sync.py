@@ -21,6 +21,9 @@ from core import config
 from core.time_utils import to_local_db_timestamp
 
 
+SYNC_REQUEST_TIMEOUT_SECONDS = 25
+
+
 def strip_area_prefix(address: str | None, area_name: str | None) -> str:
     """Prevent village names from accumulating during the web/POS round trip."""
     result = (address or "").strip()
@@ -106,6 +109,7 @@ class OnlineSyncManager(QObject):
             if time.monotonic() - self._last_orders_push >= 20:
                 self._push_pos_orders()
                 self._last_orders_push = time.monotonic()
+            self._request_json("/api/sync/heartbeat", method="POST")
             self._set_connected(True, "متزامن أونلاين")
         except Exception as exc:
             self._set_connected(False, f"غير متصل: {exc}")
@@ -253,7 +257,9 @@ class OnlineSyncManager(QObject):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=7) as response:
+            with urllib.request.urlopen(
+                request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS
+            ) as response:
                 raw = response.read()
                 return json.loads(raw.decode("utf-8")) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -279,7 +285,9 @@ class OnlineSyncManager(QObject):
             method="GET",
             headers={"X-Sync-Key": sync_key},
         )
-        with urllib.request.urlopen(request, timeout=7) as response:
+        with urllib.request.urlopen(
+            request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS
+        ) as response:
             return response.read()
 
     def _set_connected(self, connected: bool, message: str) -> None:
@@ -535,7 +543,12 @@ class OnlineSyncManager(QObject):
         server_last_event_id = result.get("server_last_event_id")
         cursor_reset = False
 
-        epoch_changed = bool(remote_epoch and remote_epoch != local_epoch)
+        # A client upgraded from the pre-epoch version has a valid event cursor
+        # but no stored epoch. Adopt the server epoch without replaying the full
+        # event history. Only a known, different epoch proves DB replacement.
+        epoch_changed = bool(
+            local_epoch and remote_epoch and remote_epoch != local_epoch
+        )
         cursor_ahead = (
             server_last_event_id is not None
             and int(server_last_event_id or 0) < last_event_id

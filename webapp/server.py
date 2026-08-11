@@ -726,9 +726,8 @@ def require_admin(x_admin_key: str = Header(default="")) -> None:
 def require_sync(x_sync_key: str = Header(default="")) -> None:
     with db_connection() as conn:
         expected = setting(conn, "sync_key", "broost-local-sync")
-        if not secrets.compare_digest(x_sync_key, expected):
-            raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
-        set_setting(conn, "pos_last_seen_at", utc_now())
+    if not secrets.compare_digest(x_sync_key, expected):
+        raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
 
 
 class OrderItemInput(BaseModel):
@@ -2422,6 +2421,15 @@ def sync_delete_customer_order(order_id: int) -> dict[str, Any]:
     return delete_customer_order_record(order_id)
 
 
+@app.post("/api/sync/heartbeat", dependencies=[Depends(require_sync)])
+def sync_heartbeat() -> dict[str, Any]:
+    """Mark the cashier online only after its real sync cycle succeeds."""
+    seen_at = utc_now()
+    with db_connection() as conn:
+        set_setting(conn, "pos_last_seen_at", seen_at)
+    return {"ok": True, "seen_at": seen_at}
+
+
 @app.get("/api/sync/menu", dependencies=[Depends(require_sync)])
 def sync_get_menu() -> dict[str, Any]:
     with db_connection() as conn:
@@ -2528,11 +2536,17 @@ def sync_events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
             "SELECT * FROM order_events WHERE id>? ORDER BY id LIMIT 200", (after,)
         ).fetchall()
         events = []
+        order_cache: dict[int, dict[str, Any] | None] = {}
         for row in rows:
             event = dict(row)
             event["payload"] = json.loads(event.pop("payload_json") or "{}")
-            order = conn.execute("SELECT * FROM orders WHERE id=?", (row["order_id"],)).fetchone()
-            event["order"] = order_to_dict(conn, order) if order else None
+            order_id = int(row["order_id"])
+            if order_id not in order_cache:
+                order = conn.execute(
+                    "SELECT * FROM orders WHERE id=?", (order_id,)
+                ).fetchone()
+                order_cache[order_id] = order_to_dict(conn, order) if order else None
+            event["order"] = order_cache[order_id]
             events.append(event)
         return {
             "events": events,

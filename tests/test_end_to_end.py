@@ -154,6 +154,11 @@ class BroostEndToEndTest(unittest.TestCase):
 
     def test_connection_check_reports_server_key_and_sync_separately(self):
         base_url = f"http://127.0.0.1:{self.port}"
+        web_db = self.temp_path / "web" / "broost_web.db"
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute("DELETE FROM settings WHERE key='pos_last_seen_at'")
+        conn.commit()
+        conn.close()
 
         connected = OnlineSyncManager.check_connection(
             base_url, "broost-local-sync"
@@ -167,6 +172,54 @@ class BroostEndToEndTest(unittest.TestCase):
         self.assertFalse(wrong_key["key_ok"])
         self.assertFalse(wrong_key["sync_ok"])
         self.assertIn("مفتاح المزامنة", wrong_key["message"])
+
+        # Testing a key must not make the public website think the cashier is open.
+        conn = sqlite3.connect(web_db, timeout=20)
+        last_seen = conn.execute(
+            "SELECT value FROM settings WHERE key='pos_last_seen_at'"
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(last_seen)
+
+        heartbeat = self.request("/api/sync/heartbeat", "POST", sync=True)
+        self.assertTrue(heartbeat["ok"])
+        conn = sqlite3.connect(web_db, timeout=20)
+        last_seen = conn.execute(
+            "SELECT value FROM settings WHERE key='pos_last_seen_at'"
+        ).fetchone()
+        conn.close()
+        self.assertTrue(last_seen and last_seen[0])
+
+    def test_first_epoch_is_adopted_without_replaying_all_events(self):
+        class EpochProbe(OnlineSyncManager):
+            def __init__(self):
+                super().__init__()
+                self.values = {
+                    "web_last_event_id": "10",
+                    "web_sync_epoch": "",
+                }
+                self.paths = []
+
+            def _setting(self, key, default=""):
+                return self.values.get(key, default)
+
+            def _set_setting(self, key, value):
+                self.values[key] = str(value)
+
+            def _request_json(self, path, method="GET", payload=None):
+                self.paths.append(path)
+                return {
+                    "events": [],
+                    "last_event_id": 10,
+                    "server_last_event_id": 12,
+                    "sync_epoch": "current-database",
+                }
+
+        probe = EpochProbe()
+        probe._pull_events()
+
+        self.assertEqual(probe.paths, ["/api/sync/events?after=10"])
+        self.assertEqual(probe.values["web_sync_epoch"], "current-database")
 
     def test_event_cursor_recovers_after_backend_database_replacement(self):
         item = self.request("/api/store")["menu"]["items"][0]
