@@ -415,7 +415,7 @@ def init_web_db() -> None:
             set_setting(conn, "online_timestamp_timezone_fixed_v1", "1")
 
         defaults = {
-            "restaurant_name": "Broost",
+            "restaurant_name": "بروست",
             "wallet_number": "",
             "ordering_enabled": "1",
             "business_hours": "",
@@ -434,6 +434,10 @@ def init_web_db() -> None:
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO NOTHING",
             defaults.items(),
+        )
+        conn.execute(
+            "UPDATE settings SET value='بروست' "
+            "WHERE key='restaurant_name' AND lower(trim(value)) IN ('broost', 'broast')"
         )
         # In hosted deployments the environment is the source of truth for
         # secrets, including after a database import or secret rotation.
@@ -1103,7 +1107,7 @@ def validate_production_config() -> None:
 
 validate_production_config()
 init_web_db()
-app = FastAPI(title="Broost Ordering API", version="1.0.0")
+app = FastAPI(title="بروست Ordering API", version="1.0.0")
 cors_value = os.getenv("CORS_ORIGINS", "*").strip()
 cors_origins = [item.strip() for item in cors_value.split(",") if item.strip()] or ["*"]
 app.add_middleware(
@@ -1181,7 +1185,7 @@ def store_snapshot() -> dict[str, Any]:
         ).fetchall()]
         cashier_online = cashier_is_online(conn)
         return {
-            "restaurant_name": setting(conn, "restaurant_name", "Broost"),
+            "restaurant_name": setting(conn, "restaurant_name", "بروست"),
             "wallet_available": bool(setting(conn, "wallet_number", "").strip()),
             "ordering_enabled": ordering_is_available(conn),
             "cashier_online": cashier_online,
@@ -1722,7 +1726,7 @@ async def admin_login(request: Request) -> dict[str, bool]:
 def get_admin_settings() -> dict[str, Any]:
     with db_connection() as conn:
         return {
-            "restaurant_name": setting(conn, "restaurant_name", "Broost"),
+            "restaurant_name": setting(conn, "restaurant_name", "بروست"),
             "wallet_number": setting(conn, "wallet_number", ""),
             "ordering_enabled": setting(conn, "ordering_enabled", "1") == "1",
             "business_hours": setting(conn, "business_hours", ""),

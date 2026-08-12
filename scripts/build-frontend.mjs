@@ -34,9 +34,16 @@ await Promise.all([
 ]);
 const imageDirectory = path.join(assets, "images");
 const imageFiles = await readdir(imageDirectory);
+const publishedPngAssets = new Set([
+  "exec-5bc8657c-2aef-41cf-8e24-46bb94fc5556.png",
+  "exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png",
+]);
 await Promise.all(
   imageFiles
-    .filter((filename) => filename.toLowerCase().endsWith(".png"))
+    .filter(
+      (filename) =>
+        filename.toLowerCase().endsWith(".png") && !publishedPngAssets.has(filename),
+    )
     .map((filename) => rm(path.join(imageDirectory, filename), { force: true })),
 );
 
