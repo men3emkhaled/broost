@@ -8,3 +8,7 @@ ACTIVE_CASHIER_NAME = ""  # Single active shift: DR OMAR
 SELECTED_PRINTER = ""
 PAPER_WIDTH = 80          # 80 or 58
 FONT_SIZE_MODE = "normal" # "normal" or "compact"
+
+# Contact details printed on every customer/cashier receipt.
+RESTAURANT_LANDLINE = "0552802874"
+RESTAURANT_MOBILE = "01092453841"

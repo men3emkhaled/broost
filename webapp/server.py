@@ -2650,9 +2650,11 @@ def sync_get_order_proof(order_id: int) -> Response:
 
 
 @app.post("/api/sync/pos-orders", dependencies=[Depends(require_sync)])
-def sync_pos_orders(payload: PosOrdersInput) -> dict[str, int]:
+def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
     synced = 0
     ignored = 0
+    repaired = 0
+    mappings: dict[str, int] = {}
     with db_connection(immediate=True) as conn:
         for order in payload.orders:
             remote_id = order.get("remote_id")
@@ -2660,11 +2662,38 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, int]:
                 existing = conn.execute(
                     "SELECT * FROM orders WHERE id=?", (remote_id,)
                 ).fetchone()
-                if not existing or existing["source"] != "ONLINE":
-                    # Never manufacture a replacement customer order with a lost resume token
-                    # or overwrite an unrelated row when a stale local remote_id is wrong.
-                    ignored += 1
-                    continue
+                local_order_id = order.get("local_order_id")
+                expected_public_number = str(order.get("public_number") or "").strip()
+                valid_mapping = bool(
+                    existing
+                    and existing["source"] == "ONLINE"
+                    and (
+                        existing["local_order_id"] in (None, local_order_id)
+                        or (
+                            expected_public_number
+                            and existing["public_number"] == expected_public_number
+                        )
+                    )
+                )
+                if not valid_mapping:
+                    # A restored/replaced backend may recycle numeric IDs. Find
+                    # the canonical order by its stable local mapping or public
+                    # number instead of touching an unrelated customer order.
+                    existing = conn.execute(
+                        "SELECT * FROM orders WHERE source='ONLINE' AND local_order_id=? "
+                        "ORDER BY id DESC LIMIT 1",
+                        (local_order_id,),
+                    ).fetchone() if local_order_id is not None else None
+                    if not existing and expected_public_number:
+                        existing = conn.execute(
+                            "SELECT * FROM orders WHERE source='ONLINE' AND public_number=?",
+                            (expected_public_number,),
+                        ).fetchone()
+                    if not existing:
+                        ignored += 1
+                        continue
+                    remote_id = existing["id"]
+                    repaired += 1
 
                 synced_status = order.get("status", existing["status"])
                 if synced_status == "ACCEPTED":
@@ -2685,9 +2714,13 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, int]:
                     "PREPARING" if existing["status"] == "ACCEPTED" else existing["status"]
                 )
                 updates: dict[str, Any] = {}
-                local_order_id = order.get("local_order_id")
                 if local_order_id != existing["local_order_id"]:
-                    updates["local_order_id"] = local_order_id
+                    conflict = conn.execute(
+                        "SELECT id FROM orders WHERE source='ONLINE' AND local_order_id=? AND id!=?",
+                        (local_order_id, existing["id"]),
+                    ).fetchone() if local_order_id is not None else None
+                    if not conflict:
+                        updates["local_order_id"] = local_order_id
                 if synced_status != current_status:
                     updates["status"] = synced_status
                     if synced_status in ("COMPLETED", "CANCELLED"):
@@ -2709,6 +2742,7 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, int]:
                     )
                     emit_event(conn, existing["id"], "ORDER_UPDATED", updates)
                 reconcile_order_loyalty(conn, existing["id"])
+                mappings[str(local_order_id)] = int(existing["id"])
                 synced += 1
                 continue
             else:
@@ -2804,7 +2838,7 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, int]:
             )
             reconcile_order_loyalty(conn, order_id)
             synced += 1
-    return {"synced": synced, "ignored": ignored}
+    return {"synced": synced, "ignored": ignored, "repaired": repaired, "mappings": mappings}
 
 
 @app.exception_handler(sqlite3.Error)

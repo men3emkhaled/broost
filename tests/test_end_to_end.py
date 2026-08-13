@@ -77,7 +77,13 @@ class BroostEndToEndTest(unittest.TestCase):
 
         cls.port = free_port()
         env = os.environ.copy()
+        env.pop("DATABASE_URL", None)
+        env.pop("CLOUDINARY_URL", None)
         env["BROOST_WEB_DATA_DIR"] = str(cls.temp_path / "web")
+        env["BROOST_LOAD_DOTENV"] = "0"
+        env["BROOST_ADMIN_PASSWORD"] = "9999"
+        env["BROOST_SYNC_KEY"] = "broost-local-sync"
+        env["APP_ENV"] = "development"
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         cls.server = subprocess.Popen(
             [
@@ -1522,6 +1528,79 @@ class BroostEndToEndTest(unittest.TestCase):
         conn.close()
         self.assertEqual(event_count, 1)
         self.assertEqual(refund_count, 1)
+
+    def test_stale_online_remote_ids_are_repaired_after_backend_restore(self):
+        manager = OnlineSyncManager()
+        manager._poll_worker()
+        store = self.request("/api/store")
+        item = store["menu"]["items"][0]
+        created = []
+        for suffix in ("01", "02"):
+            created.append(self.request(
+                "/api/orders",
+                "POST",
+                {
+                    "client_request_id": f"e2e-stale-mapping-{suffix}-0001",
+                    "fulfillment": "PICKUP",
+                    "payment_method": "CASH",
+                    "customer_name": f"عميل خريطة {suffix}",
+                    "customer_phone": f"010999999{suffix}",
+                    "area_id": None,
+                    "detailed_address": "",
+                    "notes": "",
+                    "items": [{"item_id": item["sync_id"], "quantity": 1}],
+                },
+            ))
+        manager._pull_events()
+        manager._push_pos_orders()
+
+        conn = database.get_connection()
+        local_rows = conn.execute(
+            "SELECT id, remote_id, public_number FROM orders WHERE public_number IN (?, ?) "
+            "ORDER BY public_number",
+            (created[0]["public_number"], created[1]["public_number"]),
+        ).fetchall()
+        self.assertEqual(len(local_rows), 2)
+        first_id, first_remote, _ = local_rows[0]
+        second_id, second_remote, _ = local_rows[1]
+        conn.execute("UPDATE orders SET remote_id=NULL WHERE id IN (?, ?)", (first_id, second_id))
+        conn.execute("UPDATE orders SET remote_id=? WHERE id=?", (second_remote, first_id))
+        conn.execute("UPDATE orders SET remote_id=? WHERE id=?", (first_remote, second_id))
+        conn.commit()
+        conn.close()
+
+        manager._push_pos_orders()
+        conn = database.get_connection()
+        repaired = dict(conn.execute(
+            "SELECT public_number, remote_id FROM orders WHERE id IN (?, ?)",
+            (first_id, second_id),
+        ).fetchall())
+        conn.close()
+        remote_orders = {
+            row["public_number"]: row["id"]
+            for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] in repaired
+        }
+        self.assertEqual(repaired, remote_orders)
+
+    def test_history_push_failure_does_not_block_incoming_sync_or_heartbeat(self):
+        manager = OnlineSyncManager()
+        calls = []
+        states = []
+        manager._settings = lambda: {"web_sync_enabled": "1"}
+        manager._sync_menu = lambda: calls.append("menu")
+        manager._pull_events = lambda: calls.append("events")
+        manager._push_pos_orders = lambda: (_ for _ in ()).throw(RuntimeError("old row failed"))
+        manager._connection_values = lambda: ("https://example.invalid", "hidden")
+        manager._request_json = lambda path, method="GET", payload=None: calls.append((path, method)) or {}
+        manager._set_connected = lambda connected, message: states.append((connected, message))
+
+        manager._poll_worker()
+
+        self.assertIn("events", calls)
+        self.assertIn(("/api/sync/heartbeat", "POST"), calls)
+        self.assertTrue(states[-1][0])
+        self.assertIn("يستقبل الطلبات", states[-1][1])
 
 
 if __name__ == "__main__":

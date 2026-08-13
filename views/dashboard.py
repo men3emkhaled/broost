@@ -3076,7 +3076,8 @@ class MainPOSDashboard(QMainWindow):
             html.append("<div class='double-divider'></div>")
             html.append("<table class='info-table' width='100%'>")
             html.append(f"<tr><td align='left' width='55%'>{invoice_number}</td><td class='bold' align='right' width='45%'>رقم الفاتورة:</td></tr>")
-            html.append(f"<tr><td align='left' width='55%' style='font-size: 13px; font-weight: bold;'>01006593609</td><td class='bold' align='right' width='45%'>تليفون المطعم:</td></tr>")
+            html.append(f"<tr><td align='left' width='55%' dir='ltr' style='font-size: 13px; font-weight: bold;'>{config.RESTAURANT_LANDLINE}</td><td class='bold' align='right' width='45%'>الخط الأرضي:</td></tr>")
+            html.append(f"<tr><td align='left' width='55%' dir='ltr' style='font-size: 13px; font-weight: bold;'>{config.RESTAURANT_MOBILE}</td><td class='bold' align='right' width='45%'>رقم الموبايل:</td></tr>")
             html.append(f"<tr><td align='left' width='55%'>{o_data[7]}</td><td class='bold' align='right' width='45%'>التاريخ والوقت:</td></tr>")
             
             if o_data[1] == 'DELIVERY':
@@ -3880,10 +3881,11 @@ class MainPOSDashboard(QMainWindow):
         key_input = QLineEdit(dialog)
         key_input.setText(values.get("web_sync_key", "broost-local-sync"))
         key_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        key_input.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("مفتاح المزامنة:", key_input)
 
         enabled_input = QCheckBox("تشغيل مزامنة الموقع", dialog)
-        enabled_input.setChecked(values.get("web_sync_enabled", "1") == "1")
+        enabled_input.setChecked(values.get("web_sync_enabled", "0") == "1")
         form.addRow("", enabled_input)
         layout.addLayout(form)
 
@@ -3937,7 +3939,7 @@ class MainPOSDashboard(QMainWindow):
         def connection_values():
             return server_input.text().strip().rstrip("/"), key_input.text().strip()
 
-        def save_settings():
+        def save_connection_values():
             server_url, sync_key = connection_values()
             conn = database.get_connection()
             try:
@@ -3946,8 +3948,18 @@ class MainPOSDashboard(QMainWindow):
                     [
                         ("web_server_url", server_url),
                         ("web_sync_key", sync_key),
-                        ("web_sync_enabled", "1" if enabled_input.isChecked() else "0"),
                     ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        def save_enabled(enabled):
+            conn = database.get_connection()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                    ("web_sync_enabled", "1" if enabled else "0"),
                 )
                 conn.commit()
             finally:
@@ -3983,7 +3995,7 @@ class MainPOSDashboard(QMainWindow):
             enabled_input.setEnabled(True)
             render_check_result(result)
             if check_state.get("save_after") and result.get("sync_ok"):
-                save_settings()
+                save_enabled(True)
                 dialog.accept()
                 if hasattr(self, "online_sync"):
                     self.online_sync.poll()
@@ -4002,12 +4014,17 @@ class MainPOSDashboard(QMainWindow):
             if not server_url or not sync_key:
                 set_check_style("error", "رابط السيرفر ومفتاح المزامنة مطلوبان.")
                 return
+            # Always remember what the cashier entered, even when the network
+            # check fails. A failed save attempt keeps background sync disabled.
+            save_connection_values()
             if save_after and not enabled_input.isChecked():
-                save_settings()
+                save_enabled(False)
                 dialog.accept()
                 if hasattr(self, "online_sync"):
                     self.online_sync.poll()
                 return
+            if save_after:
+                save_enabled(False)
             check_state.update(running=True, result=None, save_after=save_after)
             set_check_style("loading", "⏳ جاري فحص السيرفر والمفتاح ومسار المزامنة...")
             check.setEnabled(False)

@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -14,6 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from typing import Any
 
+import certifi
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import database
@@ -22,6 +26,60 @@ from core.time_utils import to_local_db_timestamp
 
 
 SYNC_REQUEST_TIMEOUT_SECONDS = 25
+_SSL_CONTEXT: ssl.SSLContext | None = None
+
+
+def ssl_context() -> ssl.SSLContext:
+    """Use the CA bundle shipped with the POS instead of machine-specific roots."""
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return _SSL_CONTEXT
+
+
+def open_url(request: urllib.request.Request, timeout: int):
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if urllib.parse.urlparse(request.full_url).scheme.lower() == "https":
+        kwargs["context"] = ssl_context()
+    return urllib.request.urlopen(request, **kwargs)
+
+
+def network_error_message(exc: BaseException) -> str:
+    """Return an actionable Arabic message while keeping credentials out of logs/UI."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        reason = getattr(current, "reason", None)
+        current = reason if isinstance(reason, BaseException) else current.__cause__
+
+    if any(isinstance(item, ssl.SSLCertVerificationError) for item in chain):
+        return "فشل التحقق من شهادة HTTPS. تأكد من تاريخ ووقت ويندوز ثم أعد المحاولة."
+    if any(isinstance(item, (TimeoutError, socket.timeout)) for item in chain):
+        return "انتهت مهلة الاتصال بالسيرفر. الاتصال بالإنترنت بطيء أو محجوب للبرنامج."
+    if any(isinstance(item, socket.gaierror) for item in chain):
+        return "تعذر ترجمة اسم السيرفر (DNS) داخل البرنامج."
+    text = " ".join(str(item).lower() for item in chain)
+    if "proxy" in text or "407" in text:
+        return "إعداد Proxy في ويندوز يمنع برنامج الكاشير من الوصول للسيرفر."
+    if "refused" in text or "actively refused" in text:
+        return "تم رفض اتصال البرنامج بالسيرفر بواسطة الشبكة أو الحماية."
+    return f"تعذر الوصول إلى السيرفر: {chain[-1] if chain else exc}"
+
+
+def log_network_error(operation: str, url: str, exc: BaseException) -> None:
+    """Append a credential-free diagnostic line next to the local database."""
+    parsed = urllib.parse.urlparse(url)
+    safe_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    line = (
+        f"{datetime.now().isoformat(timespec='seconds')} | {operation} | "
+        f"{safe_url} | {type(exc).__name__}: {network_error_message(exc)}\n"
+    )
+    try:
+        with open(os.path.join(database.BASE_DIR, "pos_sync.log"), "a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        pass
 
 
 def strip_area_prefix(address: str | None, area_name: str | None) -> str:
@@ -53,6 +111,7 @@ class OnlineSyncManager(QObject):
         self._last_connection_message = ""
         self._last_orders_push = 0.0
         self._last_cursor_probe = 0.0
+        self._last_nonfatal_sync_error = ""
 
     def poll(self) -> None:
         if self._busy_lock.locked():
@@ -101,16 +160,33 @@ class OnlineSyncManager(QObject):
             return
         try:
             settings = self._settings()
-            if settings.get("web_sync_enabled", "1") != "1":
+            if settings.get("web_sync_enabled", "0") != "1":
                 self._set_connected(False, "مزامنة الموقع متوقفة")
                 return
+            self._last_nonfatal_sync_error = ""
             self._sync_menu()
             self._pull_events()
             if time.monotonic() - self._last_orders_push >= 20:
-                self._push_pos_orders()
-                self._last_orders_push = time.monotonic()
+                try:
+                    self._push_pos_orders()
+                except Exception as exc:
+                    # POS history is a secondary mirror. Never let one stale/bad
+                    # historical row block incoming web orders or the heartbeat.
+                    self._last_nonfatal_sync_error = str(exc)
+                    log_network_error(
+                        "pos-orders-push",
+                        f"{self._connection_values()[0]}/api/sync/pos-orders",
+                        exc,
+                    )
+                finally:
+                    # Retry on the normal interval instead of hammering a sick
+                    # backend on every UI poll.
+                    self._last_orders_push = time.monotonic()
             self._request_json("/api/sync/heartbeat", method="POST")
-            self._set_connected(True, "متزامن أونلاين")
+            message = "متزامن أونلاين"
+            if self._last_nonfatal_sync_error:
+                message = "متصل ويستقبل الطلبات — إعادة محاولة رفع السجل تلقائيًا"
+            self._set_connected(True, message)
         except Exception as exc:
             self._set_connected(False, f"غير متصل: {exc}")
         finally:
@@ -147,7 +223,7 @@ class OnlineSyncManager(QObject):
 
     def _connection_values(self) -> tuple[str, str]:
         settings = self._settings()
-        base_url = settings.get("web_server_url", "http://127.0.0.1:8765").strip().rstrip("/")
+        base_url = settings.get("web_server_url", "").strip().rstrip("/")
         sync_key = settings.get("web_sync_key", "broost-local-sync").strip()
         return base_url, sync_key
 
@@ -178,7 +254,7 @@ class OnlineSyncManager(QObject):
                 f"{base_url}{path}", method="GET", headers=headers
             )
             try:
-                with urllib.request.urlopen(web_request, timeout=timeout) as response:
+                with open_url(web_request, timeout=timeout) as response:
                     raw = response.read()
                     payload = json.loads(raw.decode("utf-8")) if raw else {}
                     return response.status, payload, ""
@@ -189,10 +265,12 @@ class OnlineSyncManager(QObject):
                 except json.JSONDecodeError:
                     detail = raw
                 return exc.code, None, detail.strip()
-            except urllib.error.URLError:
-                return None, None, "تعذر الوصول إلى السيرفر."
+            except urllib.error.URLError as exc:
+                log_network_error("connection-check", web_request.full_url, exc)
+                return None, None, network_error_message(exc)
             except Exception as exc:
-                return None, None, str(exc)
+                log_network_error("connection-check", web_request.full_url, exc)
+                return None, None, network_error_message(exc)
 
         health_status, health, health_detail = request("/health")
         if health_status != 200 or not isinstance(health, dict) or health.get("status") != "ok":
@@ -257,9 +335,7 @@ class OnlineSyncManager(QObject):
             },
         )
         try:
-            with urllib.request.urlopen(
-                request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS
-            ) as response:
+            with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
                 raw = response.read()
                 return json.loads(raw.decode("utf-8")) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -276,7 +352,11 @@ class OnlineSyncManager(QObject):
                 message = str(detail) or f"HTTP {exc.code}"
             raise RuntimeError(message) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError("السيرفر غير متاح") from exc
+            log_network_error("sync-json", request.full_url, exc)
+            raise RuntimeError(network_error_message(exc)) from exc
+        except (OSError, TimeoutError, ssl.SSLError) as exc:
+            log_network_error("sync-json", request.full_url, exc)
+            raise RuntimeError(network_error_message(exc)) from exc
 
     def _request_bytes(self, path: str) -> bytes:
         base_url, sync_key = self._connection_values()
@@ -285,10 +365,12 @@ class OnlineSyncManager(QObject):
             method="GET",
             headers={"X-Sync-Key": sync_key},
         )
-        with urllib.request.urlopen(
-            request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS
-        ) as response:
-            return response.read()
+        try:
+            with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
+            log_network_error("sync-bytes", request.full_url, exc)
+            raise RuntimeError(network_error_message(exc)) from exc
 
     def _set_connected(self, connected: bool, message: str) -> None:
         if connected != self._last_connected or message != self._last_connection_message:
@@ -807,6 +889,7 @@ class OnlineSyncManager(QObject):
                 result.append({
                     "remote_id": row["remote_id"],
                     "local_order_id": row["id"],
+                    "public_number": row["public_number"] or "",
                     "fulfillment": fulfillment,
                     "customer_name": row["customer_name"] or "عميل المطعم",
                     "customer_phone": row["customer_phone"] or "",
@@ -836,10 +919,27 @@ class OnlineSyncManager(QObject):
         initial = self._setting("web_initial_orders_synced", "0") != "1"
         orders = self._orders_for_sync(initial)
         for start in range(0, len(orders), 200):
-            self._request_json(
+            result = self._request_json(
                 "/api/sync/pos-orders",
                 method="POST",
                 payload={"orders": orders[start:start + 200]},
             )
+            mappings = result.get("mappings", {}) if isinstance(result, dict) else {}
+            if mappings:
+                conn = database.get_connection()
+                try:
+                    for local_order_id, remote_id in mappings.items():
+                        conn.execute(
+                            "UPDATE orders SET remote_id=NULL "
+                            "WHERE source='ONLINE' AND remote_id=? AND id!=?",
+                            (int(remote_id), int(local_order_id)),
+                        )
+                        conn.execute(
+                            "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE'",
+                            (int(remote_id), int(local_order_id)),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
         if initial:
             self._set_setting("web_initial_orders_synced", "1")
