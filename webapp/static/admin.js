@@ -98,7 +98,7 @@ function renderOrders() {
 
   const closed = orders.filter((row) => ["COMPLETED", "CANCELLED"].includes(row.status));
   $("#closedOrdersTable").innerHTML = closed.map((row) => `
-    <tr><td><strong>${escapeHtml(row.public_number)}</strong></td><td>${sourceLabel(row.source)}</td><td><button class="customer-link" data-open-customer="${escapeHtml(row.customer_phone || "")}">${escapeHtml(row.customer_name)}</button>${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(row.subtotal)}</td><td>${money(row.delivery_fee)}</td><td>${statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
+    <tr><td><strong>${escapeHtml(row.public_number)}</strong></td><td>${sourceLabel(row.source)}</td><td><button class="customer-link" data-open-customer="${escapeHtml(row.customer_phone || "")}">${escapeHtml(row.customer_name)}</button>${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(row.subtotal)}</td><td>${money(row.delivery_fee)}</td><td>${row.cancelled_by === "TIMEOUT" ? "مرفوض تلقائيًا" : statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
 }
 
 function orderCard(order) {

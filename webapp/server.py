@@ -64,6 +64,7 @@ LOYALTY_REWARD_POINTS = 100
 LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
 LOYALTY_REWARD_CODE_VALUE = Decimal("150")
 POS_HEARTBEAT_TIMEOUT_SECONDS = 30
+ORDER_ACCEPTANCE_TIMEOUT_MINUTES = 30
 
 ORDER_STATUS_TRANSITIONS = {
     "NEW": {"PREPARING", "CANCELLED"},
@@ -84,6 +85,19 @@ WALLET_PAYMENT_TRANSITIONS = {
 
 def utc_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def parse_utc_datetime(value: str | None) -> datetime | None:
+    """Parse stored ISO timestamps consistently on SQLite and PostgreSQL."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def normalize_phone(value: str | None) -> str:
@@ -720,6 +734,54 @@ def emit_event(
     )
 
 
+def expire_unaccepted_orders(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+) -> list[int]:
+    """Reject online orders that stayed NEW beyond the cashier acceptance window."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    cutoff = current - timedelta(minutes=ORDER_ACCEPTANCE_TIMEOUT_MINUTES)
+    closed_at = current.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    expired_ids: list[int] = []
+
+    candidates = conn.execute(
+        "SELECT id, public_number, created_at FROM orders "
+        "WHERE source='ONLINE' AND status='NEW'"
+    ).fetchall()
+    for order in candidates:
+        created_at = parse_utc_datetime(order["created_at"])
+        if created_at is None or created_at > cutoff:
+            continue
+        updated = conn.execute(
+            "UPDATE orders SET status='CANCELLED', cancelled_by='TIMEOUT', "
+            "closed_at=?, updated_at=? WHERE id=? AND source='ONLINE' AND status='NEW'",
+            (closed_at, closed_at, order["id"]),
+        )
+        if updated.rowcount != 1:
+            continue
+        order_id = int(order["id"])
+        reconcile_order_loyalty(conn, order_id)
+        emit_event(
+            conn,
+            order_id,
+            "ORDER_AUTO_REJECTED",
+            {
+                "public_number": order["public_number"],
+                "status": "CANCELLED",
+                "cancelled_by": "TIMEOUT",
+                "reason": "ACCEPTANCE_TIMEOUT",
+                "timeout_minutes": ORDER_ACCEPTANCE_TIMEOUT_MINUTES,
+            },
+        )
+        expired_ids.append(order_id)
+    return expired_ids
+
+
 def require_admin(x_admin_key: str = Header(default="")) -> None:
     with db_connection() as conn:
         expected = setting(conn, "admin_password", "9999")
@@ -966,7 +1028,8 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
         SELECT
             COUNT(*) AS total_orders,
             COALESCE(SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END), 0) AS completed_orders,
-            COALESCE(SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END), 0) AS cancelled_orders,
+            COALESCE(SUM(CASE WHEN status='CANCELLED' AND COALESCE(cancelled_by, '')!='TIMEOUT'
+                              THEN 1 ELSE 0 END), 0) AS cancelled_orders,
             COALESCE(SUM(CASE WHEN payment_method='WALLET' AND payment_status='CONFIRMED'
                               AND status!='CANCELLED' THEN 1 ELSE 0 END), 0) AS confirmed_wallets,
             MAX(created_at) AS last_order_at
@@ -987,6 +1050,7 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
         """
         SELECT status FROM orders
         WHERE customer_phone_normalized=? AND status IN ('COMPLETED', 'CANCELLED')
+          AND NOT (status='CANCELLED' AND COALESCE(cancelled_by, '')='TIMEOUT')
         ORDER BY created_at DESC, id DESC LIMIT 1
         """,
         (normalized,),
@@ -1149,7 +1213,8 @@ def health() -> dict[str, str]:
 
 @app.get("/api/store")
 def store_snapshot() -> dict[str, Any]:
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         areas = [dict(row) for row in conn.execute(
             "SELECT id, name, delivery_fee, delivery_enabled, sort_order FROM delivery_areas "
             "WHERE is_active=1 ORDER BY sort_order, name"
@@ -1277,7 +1342,8 @@ def public_customer_orders(phone: str = Query(min_length=7, max_length=30)) -> d
             detail="رقم الموبايل لازم يكون 11 رقم ويبدأ بـ010 أو 011 أو 012 أو 015",
         )
     normalized = phone.strip()
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         rows = conn.execute(
             "SELECT * FROM orders WHERE source='ONLINE' AND customer_phone_normalized=? "
             "ORDER BY created_at DESC, id DESC LIMIT 50",
@@ -1547,7 +1613,8 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
 
 @app.get("/api/orders/{resume_token}")
 def get_public_order(resume_token: str) -> dict[str, Any]:
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         row = conn.execute("SELECT * FROM orders WHERE resume_token=?", (resume_token,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="الطلب غير موجود")
@@ -2111,7 +2178,8 @@ def admin_orders(
         clauses.append("status=?")
         params.append(status.upper())
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         rows = conn.execute(
             f"SELECT * FROM orders {where} ORDER BY created_at DESC LIMIT 1000", params
         ).fetchall()
@@ -2361,6 +2429,7 @@ def update_admin_order(order_id: int, payload: OrderAdminUpdate) -> dict[str, An
     if changes.get("status") == "ACCEPTED":
         changes["status"] = "PREPARING"
     with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         existing = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="الطلب غير موجود")
@@ -2429,7 +2498,8 @@ def sync_delete_customer_order(order_id: int) -> dict[str, Any]:
 def sync_heartbeat() -> dict[str, Any]:
     """Mark the cashier online only after its real sync cycle succeeds."""
     seen_at = utc_now()
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         set_setting(conn, "pos_last_seen_at", seen_at)
     return {"ok": True, "seen_at": seen_at}
 
@@ -2530,7 +2600,8 @@ def sync_post_menu(payload: SyncMenuInput) -> dict[str, Any]:
 
 @app.get("/api/sync/events", dependencies=[Depends(require_sync)])
 def sync_events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
-    with db_connection() as conn:
+    with db_connection(immediate=True) as conn:
+        expire_unaccepted_orders(conn)
         sync_epoch = setting(conn, "sync_epoch", "")
         server_last_row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS last_id FROM order_events"

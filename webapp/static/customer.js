@@ -726,7 +726,7 @@ function renderOrder() {
     READY: order.fulfillment === "PICKUP" ? "طلبك جاهز للاستلام" : "طلبك جاهز وخرج للدليفري",
     DISPATCHED: "طلبك جاهز وخرج للدليفري",
     COMPLETED: "تم تسليم الطلب",
-    CANCELLED: "تم إلغاء الطلب",
+    CANCELLED: order.cancelled_by === "TIMEOUT" ? "تم رفض الطلب" : "تم إلغاء الطلب",
   };
   $("#trackTitle").textContent = titles[status] || "متابعة الطلب";
   $("#trackDescription").textContent = order.fulfillment === "DELIVERY"
@@ -750,7 +750,9 @@ function renderOrder() {
   if (status === "CANCELLED") {
     const message = order.cancelled_by === "CUSTOMER"
       ? "تم إلغاء الطلب بناءً على طلبك."
-      : "تم إلغاء الطلب من المطعم.";
+      : order.cancelled_by === "TIMEOUT"
+        ? "تم رفض الطلب تلقائيًا لعدم تأكيده من المطعم خلال 30 دقيقة. أي نقاط أو كود مكافأة رجعوا لحسابك."
+        : "تم إلغاء الطلب من المطعم.";
     $("#orderTimeline").innerHTML = `<div class="notice notice-danger">${message}</div>`;
   }
 

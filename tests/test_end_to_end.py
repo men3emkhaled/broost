@@ -758,6 +758,7 @@ class BroostEndToEndTest(unittest.TestCase):
         self.assertEqual(customer_cancel_event_count, 1)
 
         paid_phone = "01055554444"
+        paid_now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = sqlite3.connect(web_db, timeout=20)
         cursor = conn.execute(
             """
@@ -772,7 +773,7 @@ class BroostEndToEndTest(unittest.TestCase):
             (
                 "WEB-LOYALTY-170", "loyalty-170-token", "e2e-loyalty-paid-0170",
                 "عميل 170", paid_phone, paid_phone,
-                "2026-08-05T12:00:00Z", "2026-08-05T12:00:00Z",
+                paid_now, paid_now,
             ),
         )
         paid_order_id = cursor.lastrowid
@@ -1412,6 +1413,115 @@ class BroostEndToEndTest(unittest.TestCase):
         ).fetchone()[0]
         conn.close()
         self.assertEqual(earned_transactions, 0)
+
+
+    def test_unaccepted_online_order_expires_after_thirty_minutes(self):
+        web_db = self.temp_path / "web" / "broost_web.db"
+        phone = "01555559999"
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute(
+            "INSERT OR REPLACE INTO loyalty_accounts "
+            "(phone_normalized, points_balance, lifetime_points, updated_at) "
+            "VALUES (?, 100, 100, ?)",
+            (phone, "2026-08-13T12:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+        store = self.request("/api/store")
+        item = min(
+            (row for row in store["menu"]["items"] if 0 < float(row["base_price"]) <= 150),
+            key=lambda row: float(row["base_price"]),
+        )
+        created = self.request(
+            "/api/orders",
+            "POST",
+            {
+                "client_request_id": "e2e-auto-timeout-reward-0001",
+                "fulfillment": "PICKUP",
+                "payment_method": "CASH",
+                "customer_name": "عميل مهلة التأكيد",
+                "customer_phone": phone,
+                "area_id": None,
+                "detailed_address": "",
+                "notes": "",
+                "redeem_reward": True,
+                "items": [{
+                    "item_id": item["sync_id"],
+                    "quantity": 1,
+                    "size_id": None,
+                    "extra_ids": [],
+                    "spicy": False,
+                }],
+            },
+        )
+        remote = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == created["public_number"]
+        )
+        self.assertEqual(self.request(f"/api/loyalty?phone={phone}")["points"], 0)
+
+        twenty_nine_minutes_ago = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 29 * 60)
+        )
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute(
+            "UPDATE orders SET created_at=? WHERE id=?",
+            (twenty_nine_minutes_ago, remote["id"]),
+        )
+        conn.commit()
+        conn.close()
+        still_waiting = self.request(f"/api/orders/{created['resume_token']}")
+        self.assertEqual(still_waiting["status"], "NEW")
+
+        thirty_one_minutes_ago = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 31 * 60)
+        )
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute(
+            "UPDATE orders SET created_at=? WHERE id=?",
+            (thirty_one_minutes_ago, remote["id"]),
+        )
+        conn.commit()
+        conn.close()
+
+        expired = self.request(f"/api/orders/{created['resume_token']}")
+        self.assertEqual(expired["status"], "CANCELLED")
+        self.assertEqual(expired["cancelled_by"], "TIMEOUT")
+        self.assertEqual(self.request(f"/api/loyalty?phone={phone}")["points"], 100)
+
+        expired_admin = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == created["public_number"]
+        )
+        self.assertEqual(expired_admin["customer_reliability"]["cancelled_orders"], 0)
+        self.assertEqual(expired_admin["customer_reliability"]["order_mood"], "NEUTRAL")
+
+        with self.assertRaises(urllib.error.HTTPError) as late_accept:
+            self.request(
+                f"/api/admin/orders/{remote['id']}",
+                "PATCH",
+                {"status": "PREPARING"},
+                admin=True,
+            )
+        self.assertEqual(late_accept.exception.code, 409)
+
+        self.request(f"/api/orders/{created['resume_token']}")
+        self.request("/api/sync/events?after=0", sync=True)
+        conn = sqlite3.connect(web_db, timeout=20)
+        event_count = conn.execute(
+            "SELECT COUNT(*) FROM order_events WHERE order_id=? "
+            "AND event_type='ORDER_AUTO_REJECTED'",
+            (remote["id"],),
+        ).fetchone()[0]
+        refund_count = conn.execute(
+            "SELECT COUNT(*) FROM loyalty_transactions WHERE order_id=? "
+            "AND transaction_type='REDEEM_REFUND'",
+            (remote["id"],),
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(event_count, 1)
+        self.assertEqual(refund_count, 1)
 
 
 if __name__ == "__main__":
