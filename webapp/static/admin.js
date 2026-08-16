@@ -82,6 +82,7 @@ function renderOrders() {
   const orders = adminState.orders;
   $("#kpiOrders").textContent = orders.length;
   $("#kpiOnline").textContent = orders.filter((row) => row.source === "ONLINE").length;
+  $("#kpiPos").textContent = orders.filter((row) => row.source === "POS").length;
   $("#kpiRevenue").textContent = money(orders.filter((row) => row.status === "COMPLETED").reduce((sum, row) => sum + Number(row.subtotal) - Number(row.discount || 0), 0));
 
   const groups = {
@@ -98,7 +99,7 @@ function renderOrders() {
 
   const closed = orders.filter((row) => ["COMPLETED", "CANCELLED"].includes(row.status));
   $("#closedOrdersTable").innerHTML = closed.map((row) => `
-    <tr><td><strong>${escapeHtml(row.public_number)}</strong></td><td>${sourceLabel(row.source)}</td><td><button class="customer-link" data-open-customer="${escapeHtml(row.customer_phone || "")}">${escapeHtml(row.customer_name)}</button>${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(row.subtotal)}</td><td>${money(row.delivery_fee)}</td><td>${row.cancelled_by === "TIMEOUT" ? "مرفوض تلقائيًا" : statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
+    <tr><td><strong>${escapeHtml(row.public_number)}</strong></td><td>${sourceBadge(row.source)}</td><td><button class="customer-link" data-open-customer="${escapeHtml(row.customer_phone || "")}">${escapeHtml(row.customer_name)}</button>${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(row.subtotal)}</td><td>${money(row.delivery_fee)}</td><td>${row.cancelled_by === "TIMEOUT" ? "مرفوض تلقائيًا" : statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
 }
 
 function orderCard(order) {
@@ -111,8 +112,9 @@ function orderCard(order) {
   const loyaltyNotice = redeemedPoints
     ? `<div class="notice ${order.status === "CANCELLED" ? "notice-success" : "notice-warning"}">${order.status === "CANCELLED" ? `رجعت ${redeemedPoints} نقطة لرصيد العميل` : `${redeemedPoints} نقطة محجوزة لهذا الطلب وتعود تلقائيًا لو اتلغى`}</div>`
     : "";
-  return `<article class="card order-card">
-    <div class="order-card-head"><div><h3>${escapeHtml(order.public_number)}</h3><div class="chips"><span class="badge ${order.source === "ONLINE" ? "badge-brand" : ""}">${sourceLabel(order.source)}</span><span class="badge">${order.fulfillment === "DELIVERY" ? "دليفري" : "استلام"}</span><span class="badge badge-warning">${statusLabel(order.status)}</span></div></div><strong>${money(order.total)}</strong></div>
+  const sourceClass = order.source === "ONLINE" ? "order-source-online" : "order-source-pos";
+  return `<article class="card order-card ${sourceClass}">
+    <div class="order-card-head"><div><h3>${escapeHtml(order.public_number)}</h3><div class="chips">${sourceBadge(order.source)}<span class="badge">${order.fulfillment === "DELIVERY" ? "دليفري" : "استلام"}</span><span class="badge badge-warning">${statusLabel(order.status)}</span></div></div><strong>${money(order.total)}</strong></div>
     <p><strong>${escapeHtml(order.customer_name)}</strong> · ${escapeHtml(order.customer_phone || "بدون رقم")}</p>
     <div class="customer-trust-row">${reliabilityBadge(reliability)}<span>${reliabilityFacts(reliability)}</span></div>
     ${reliability.needs_call ? `<div class="notice notice-warning trust-warning">اتصل بالعميل للتأكيد قبل تجهيز الطلب.</div>` : ""}
@@ -145,7 +147,8 @@ function statusActions(order) {
 }
 
 function emptyColumn() { return `<div class="card empty-state">لا توجد طلبات هنا.</div>`; }
-function sourceLabel(source) { return source === "ONLINE" ? "الموقع" : "المطعم"; }
+function sourceLabel(source) { return source === "ONLINE" ? "أونلاين" : "داخل المطعم"; }
+function sourceBadge(source) { return `<span class="badge ${source === "ONLINE" ? "badge-brand" : "badge-success"}">${sourceLabel(source)}</span>`; }
 function statusLabel(status) { return ({ NEW: "جديد", ACCEPTED: "مؤكد وجاري التجهيز", PREPARING: "مؤكد وجاري التجهيز", READY: "جاهز", DISPATCHED: "جاهز وخرج للتوصيل", COMPLETED: "تم التسليم", CANCELLED: "ملغي" })[status] || status; }
 function paymentLabel(order) {
   if (order.payment_method === "CASH") return "نقدي";

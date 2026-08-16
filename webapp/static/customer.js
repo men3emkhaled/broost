@@ -718,6 +718,7 @@ function renderOrder() {
   const order = state.order;
   if (!order) return;
   const status = order.status === "ACCEPTED" ? "PREPARING" : order.status;
+  $("#trackingView").dataset.orderStatus = status.toLowerCase();
   $("#trackNumber").textContent = order.public_number;
   $("#trackPayment").textContent = paymentLabel(order.payment_method, order.payment_status);
   const titles = {
@@ -745,8 +746,15 @@ function renderOrder() {
     DISPATCHED: "جاهز وخرج للدليفري",
     COMPLETED: "تم التسليم",
   };
+  const stepDescriptions = {
+    NEW: "الطلب وصلنا",
+    PREPARING: "المطبخ بيجهزه",
+    READY: "جاهز تستلمه",
+    DISPATCHED: "في الطريق ليك",
+    COMPLETED: "الطلب اكتمل",
+  };
   $("#orderTimeline").innerHTML = steps.map((step, index) => `
-    <div class="timeline-step ${index <= currentIndex && status !== "CANCELLED" ? "active" : ""} ${index === currentIndex && status !== "CANCELLED" ? "current" : ""}"><span class="timeline-dot">${index < currentIndex ? "✓" : index + 1}</span><strong>${labels[step]}</strong></div>`).join("");
+    <div class="timeline-step ${index <= currentIndex && status !== "CANCELLED" ? "active" : ""} ${index === currentIndex && status !== "CANCELLED" ? "current" : ""}"><span class="timeline-dot">${index < currentIndex ? "✓" : index + 1}</span><span class="timeline-copy"><strong>${labels[step]}</strong><small>${stepDescriptions[step]}</small></span></div>`).join("");
   if (status === "CANCELLED") {
     const message = order.cancelled_by === "CUSTOMER"
       ? "تم إلغاء الطلب بناءً على طلبك."
@@ -774,8 +782,13 @@ function renderOrder() {
   loyaltyMessages.push(`رصيدك الحالي ${Number(loyalty.points || 0)} نقطة.`);
   $("#trackLoyalty").innerHTML = `<strong>نقط بروست</strong><span>${loyaltyMessages.join(" ")}</span>`;
 
-  $("#trackingItems").innerHTML = order.items.map((line) => `
-    <div class="cart-row"><span>${line.quantity} × ${escapeHtml(line.item_name)}</span><strong>${money(line.unit_price * line.quantity)}</strong></div>`).join("");
+  $("#trackingItems").innerHTML = order.items.map((line) => {
+    const details = [
+      line.size_name,
+      ...(line.extras || []).map((extra) => typeof extra === "string" ? extra : extra.name),
+    ].filter(Boolean).join(" · ");
+    return `<div class="tracking-item-row"><span class="tracking-item-qty">${Number(line.quantity || 1)}×</span><span class="tracking-item-copy"><strong>${escapeHtml(line.item_name)}</strong>${details ? `<small>${escapeHtml(details)}</small>` : ""}</span><strong class="tracking-item-price">${money(line.unit_price * line.quantity)}</strong></div>`;
+  }).join("");
   $("#trackSubtotal").textContent = money(order.subtotal);
   $("#trackDiscountRow").hidden = !Number(order.discount || 0);
   $("#trackDiscount").textContent = `− ${money(order.discount)}`;

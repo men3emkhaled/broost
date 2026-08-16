@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#17120a">
   <title>بروست — اطلب أونلاين</title>
   <link rel="icon" type="image/png" href="/assets/images/exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png">
-  <link rel="stylesheet" href="/assets/styles.css?v=20260812-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260816-2">
 </head>
 <body class="customer-site">
   <div class="app-shell">
@@ -198,19 +198,26 @@
       </div>
     </main>
 
-    <main id="trackingView" class="checkout-page" hidden>
-      <div class="container">
-        <div class="checkout-layout">
-          <section class="card panel">
-            <div class="tracking-head">
-              <div class="tracking-brand-mark"><img src="/assets/images/exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png" alt="شعار بروست"></div>
-              <div>
-                <div class="status-line"><span class="badge badge-brand" id="trackNumber"></span><span class="badge" id="trackPayment"></span></div>
-                <h2 id="trackTitle">تم استلام طلبك</h2>
-                <p class="muted" id="trackDescription"></p>
+    <main id="trackingView" class="checkout-page tracking-page" hidden>
+      <div class="container tracking-container">
+        <div class="checkout-layout tracking-layout">
+          <section class="card panel tracking-status-card">
+            <div class="tracking-status-hero">
+              <div class="tracking-head">
+                <div class="tracking-brand-mark"><img src="/assets/images/exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png" alt="شعار بروست"></div>
+                <div class="tracking-head-copy">
+                  <div class="tracking-live-row"><span class="tracking-live"><i aria-hidden="true"></i> تحديث تلقائي</span><div class="status-line"><span class="badge badge-brand" id="trackNumber"></span><span class="badge" id="trackPayment"></span></div></div>
+                  <span class="tracking-eyebrow">حالة طلبك الآن</span>
+                  <h2 id="trackTitle">تم استلام طلبك</h2>
+                  <p id="trackDescription"></p>
+                </div>
               </div>
             </div>
-            <div class="timeline" id="orderTimeline"></div>
+
+            <div class="tracking-progress-card">
+              <div class="tracking-section-heading"><div><span>رحلة طلبك</span><strong>من التأكيد لحد الاستلام</strong></div><small>الحالة بتتحدث تلقائيًا كل شوية</small></div>
+              <div class="timeline" id="orderTimeline"></div>
+            </div>
             <div class="loyalty-order-note" id="trackLoyalty"></div>
 
             <div class="wallet-panel" id="walletPanel" hidden>
@@ -228,8 +235,8 @@
             </div>
           </section>
 
-          <aside class="card panel sticky-summary">
-            <h3 class="summary-title">تفاصيل الحساب</h3>
+          <aside class="card panel sticky-summary tracking-summary-card">
+            <div class="tracking-summary-head"><div><span>ملخص الطلب</span><h3 class="summary-title">تفاصيل الحساب</h3></div><span class="summary-check" aria-hidden="true">✓</span></div>
             <div class="cart-lines" id="trackingItems"></div>
             <div class="summary-row"><span>المنتجات</span><strong id="trackSubtotal"></strong></div>
             <div class="summary-row reward-discount-row" id="trackDiscountRow" hidden><span>مكافأة النقاط</span><strong id="trackDiscount"></strong></div>
@@ -288,6 +295,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/customer.js?v=20260812-1" defer></script>
+  <script src="/assets/customer.js?v=20260816-2" defer></script>
 </body>
 </html>

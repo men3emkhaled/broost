@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#202024">
   <title>بروست — لوحة الإدارة</title>
   <link rel="icon" type="image/png" href="/assets/images/exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png">
-  <link rel="stylesheet" href="/assets/styles.css?v=20260812-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260816-1">
 </head>
 <body class="admin-page">
   <div class="admin-shell">
@@ -32,14 +32,15 @@
           <div class="section-head"><div><h2>كل الطلبات</h2><p>طلبات المطعم والموقع في مكان واحد.</p></div><button class="btn" id="refreshOrdersBtn">تحديث</button></div>
           <div class="kpi-grid">
             <div class="card kpi"><span class="muted">عدد الطلبات</span><strong id="kpiOrders">0</strong><small>حسب الفترة المختارة</small></div>
-            <div class="card kpi"><span class="muted">طلبات الموقع</span><strong id="kpiOnline">0</strong><small>دليفري واستلام</small></div>
+            <div class="card kpi kpi-online"><span class="muted">طلبات أونلاين</span><strong id="kpiOnline">0</strong><small>الطلبات المرسلة من الموقع</small></div>
+            <div class="card kpi kpi-pos"><span class="muted">طلبات داخل المطعم</span><strong id="kpiPos">0</strong><small>المسجلة على نظام الكاشير</small></div>
             <div class="card kpi"><span class="muted">مبيعات المنتجات</span><strong id="kpiRevenue">0 ج</strong><small>بدون رسوم التوصيل</small></div>
           </div>
 
           <div class="filter-bar">
             <input class="input" type="date" id="ordersFrom" aria-label="من تاريخ">
             <input class="input" type="date" id="ordersTo" aria-label="إلى تاريخ">
-            <select class="input" id="ordersSource" aria-label="مصدر الطلب"><option value="">كل المصادر</option><option value="ONLINE">الموقع</option><option value="POS">المطعم</option></select>
+            <select class="input" id="ordersSource" aria-label="مصدر الطلب"><option value="">كل المصادر</option><option value="ONLINE">أونلاين</option><option value="POS">داخل المطعم</option></select>
             <button class="btn btn-primary" id="applyOrderFilters">عرض</button>
           </div>
 
@@ -224,6 +225,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/admin.js?v=20260811-1" defer></script>
+  <script src="/assets/admin.js?v=20260816-1" defer></script>
 </body>
 </html>
