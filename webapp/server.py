@@ -941,6 +941,12 @@ class PosOrdersInput(BaseModel):
     orders: list[dict[str, Any]] = Field(max_length=250)
 
 
+class SyncHeartbeatInput(BaseModel):
+    business_day_start: str | None = Field(default=None, max_length=40)
+    shift_opened_at: str | None = Field(default=None, max_length=40)
+    shift_is_open: bool | None = None
+
+
 def read_menu(conn: sqlite3.Connection, include_deleted: bool = False) -> dict[str, Any]:
     deleted_filter = "" if include_deleted else "WHERE is_deleted=0"
     categories = [dict(row) for row in conn.execute(
@@ -2343,6 +2349,18 @@ def admin_orders(
         return admin_orders_to_dict(conn, rows)
 
 
+@app.get("/api/admin/business-day", dependencies=[Depends(require_admin)])
+def admin_business_day() -> dict[str, Any]:
+    """Expose the same rolling business-day boundary used by the POS reports."""
+    with db_connection() as conn:
+        return {
+            "business_day_start": setting(conn, "pos_business_day_start", "") or None,
+            "shift_opened_at": setting(conn, "pos_shift_opened_at", "") or None,
+            "shift_is_open": setting(conn, "pos_shift_is_open", "0") == "1",
+            "cashier_online": cashier_is_online(conn),
+        }
+
+
 def customer_list_data(
     conn: sqlite3.Connection, query: str = "", limit: int = 250
 ) -> list[dict[str, Any]]:
@@ -2652,12 +2670,28 @@ def sync_delete_customer_order(order_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/sync/heartbeat", dependencies=[Depends(require_sync)])
-def sync_heartbeat() -> dict[str, Any]:
+def sync_heartbeat(payload: SyncHeartbeatInput | None = None) -> dict[str, Any]:
     """Mark the cashier online only after its real sync cycle succeeds."""
     seen_at = utc_now()
     with db_connection(immediate=True) as conn:
         expire_unaccepted_orders(conn)
         set_setting(conn, "pos_last_seen_at", seen_at)
+        if payload:
+            for field, setting_key in (
+                (payload.business_day_start, "pos_business_day_start"),
+                (payload.shift_opened_at, "pos_shift_opened_at"),
+            ):
+                if not field:
+                    continue
+                try:
+                    datetime.fromisoformat(field.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                set_setting(conn, setting_key, field)
+            if payload.shift_is_open is not None:
+                set_setting(conn, "pos_shift_is_open", "1" if payload.shift_is_open else "0")
+                if not payload.shift_is_open:
+                    set_setting(conn, "pos_shift_opened_at", "")
     return {"ok": True, "seen_at": seen_at}
 
 

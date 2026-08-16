@@ -2,6 +2,7 @@ const adminState = {
   key: sessionStorage.getItem("broost_admin_key") || "",
   orders: [],
   dashboardOrders: [],
+  businessDay: null,
   ordersLoading: null,
   customers: [],
   areas: [],
@@ -84,7 +85,12 @@ async function loadOrders(force = false) {
     const query = filterQuery();
     const dashboardRequest = adminApi("/api/admin/orders");
     const filteredRequest = query ? adminApi(`/api/admin/orders?${query}`) : dashboardRequest;
-    [adminState.dashboardOrders, adminState.orders] = await Promise.all([dashboardRequest, filteredRequest]);
+    const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);
+    [adminState.dashboardOrders, adminState.orders, adminState.businessDay] = await Promise.all([
+      dashboardRequest,
+      filteredRequest,
+      businessDayRequest,
+    ]);
     renderOrders();
   })();
   try {
@@ -101,12 +107,21 @@ function parsedLocalDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function isToday(value, now = new Date()) {
+function defaultBusinessDayStart(now = new Date()) {
+  const start = new Date(now);
+  start.setHours(8, 0, 0, 0);
+  if (now < start) start.setDate(start.getDate() - 1);
+  return start;
+}
+
+function currentBusinessDayStart(now = new Date()) {
+  const cashierStart = parsedLocalDate(adminState.businessDay?.business_day_start);
+  return cashierStart && cashierStart <= now ? cashierStart : defaultBusinessDayStart(now);
+}
+
+function isInBusinessDay(value, start, now = new Date()) {
   const date = parsedLocalDate(value);
-  return Boolean(date)
-    && date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
+  return Boolean(date) && date >= start && date <= now;
 }
 
 function productNet(order) {
@@ -116,9 +131,12 @@ function productNet(order) {
 function renderDailyOverview() {
   const orders = adminState.dashboardOrders;
   const now = new Date();
-  const createdToday = orders.filter((order) => isToday(order.created_at, now));
-  const completedToday = orders.filter((order) => order.status === "COMPLETED" && isToday(order.closed_at || order.updated_at || order.created_at, now));
-  const cancelledToday = orders.filter((order) => order.status === "CANCELLED" && isToday(order.closed_at || order.updated_at || order.created_at, now));
+  const businessStart = currentBusinessDayStart(now);
+  const createdToday = orders.filter((order) => isInBusinessDay(order.created_at, businessStart, now));
+  // Cashier reports count a completed/cancelled order in the business period
+  // where the order was created, so the website deliberately uses created_at too.
+  const completedToday = createdToday.filter((order) => order.status === "COMPLETED");
+  const cancelledToday = createdToday.filter((order) => order.status === "CANCELLED");
   const activeOrders = orders.filter((order) => ["NEW", "ACCEPTED", "PREPARING", "READY", "DISPATCHED"].includes(order.status));
   const netSales = completedToday.reduce((sum, order) => sum + productNet(order), 0);
   const deliveryFees = completedToday.reduce((sum, order) => sum + Number(order.delivery_fee || 0), 0);
@@ -140,7 +158,9 @@ function renderDailyOverview() {
   }));
   const topItem = [...itemStats.entries()].sort((a, b) => b[1].quantity - a[1].quantity || b[1].sales - a[1].sales)[0];
 
-  $("#adminTodayLabel").textContent = `${now.toLocaleDateString("ar-EG", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · الأرقام تتحدث تلقائيًا`;
+  const startTime = businessStart.toLocaleTimeString("ar-EG", { hour: "numeric", minute: "2-digit" });
+  const periodSource = adminState.businessDay?.business_day_start ? "حسب يوم عمل الكاشير" : "يبدأ افتراضيًا ٨ صباحًا";
+  $("#adminTodayLabel").textContent = `من ${startTime} حتى الآن · ${periodSource} · الأرقام تتحدث تلقائيًا`;
   $("#todayNetSales").textContent = money(netSales);
   $("#todayCompleted").textContent = completedToday.length;
   $("#todayAverage").textContent = money(completedToday.length ? netSales / completedToday.length : 0);

@@ -196,6 +196,24 @@ class BroostEndToEndTest(unittest.TestCase):
         conn.close()
         self.assertTrue(last_seen and last_seen[0])
 
+        business_start = "2026-08-16 08:00:00"
+        shift_opened = "2026-08-16 11:15:00"
+        heartbeat = self.request(
+            "/api/sync/heartbeat",
+            "POST",
+            {
+                "business_day_start": business_start,
+                "shift_opened_at": shift_opened,
+                "shift_is_open": True,
+            },
+            sync=True,
+        )
+        self.assertTrue(heartbeat["ok"])
+        day_context = self.request("/api/admin/business-day", admin=True)
+        self.assertEqual(day_context["business_day_start"], business_start)
+        self.assertEqual(day_context["shift_opened_at"], shift_opened)
+        self.assertTrue(day_context["shift_is_open"])
+
     def test_first_epoch_is_adopted_without_replaying_all_events(self):
         class EpochProbe(OnlineSyncManager):
             def __init__(self):

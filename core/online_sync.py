@@ -182,7 +182,11 @@ class OnlineSyncManager(QObject):
                     # Retry on the normal interval instead of hammering a sick
                     # backend on every UI poll.
                     self._last_orders_push = time.monotonic()
-            self._request_json("/api/sync/heartbeat", method="POST")
+            self._request_json(
+                "/api/sync/heartbeat",
+                method="POST",
+                payload=self._cashier_day_context(),
+            )
             message = "متزامن أونلاين"
             if self._last_nonfatal_sync_error:
                 message = "متصل ويستقبل الطلبات — إعادة محاولة رفع السجل تلقائيًا"
@@ -191,6 +195,33 @@ class OnlineSyncManager(QObject):
             self._set_connected(False, f"غير متصل: {exc}")
         finally:
             self._busy_lock.release()
+
+    def _cashier_day_context(self) -> dict[str, Any]:
+        """Send the exact business-day boundary used by the cashier reports."""
+        payload: dict[str, Any] = {}
+        try:
+            business_start = database.get_business_day_start()
+            payload["business_day_start"] = business_start.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            # A heartbeat must keep working even if the local reporting context
+            # cannot be read temporarily.
+            pass
+
+        try:
+            conn = database.get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT opened_at FROM shifts WHERE closed_at IS NULL "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            payload["shift_is_open"] = bool(row)
+            if row and row[0]:
+                payload["shift_opened_at"] = str(row[0])[:19]
+        except Exception:
+            pass
+        return payload
 
     def _settings(self) -> dict[str, str]:
         conn = database.get_connection()
