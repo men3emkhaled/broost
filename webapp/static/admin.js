@@ -1,6 +1,8 @@
 const adminState = {
   key: sessionStorage.getItem("broost_admin_key") || "",
   orders: [],
+  dashboardOrders: [],
+  ordersLoading: null,
   customers: [],
   areas: [],
   reviews: [],
@@ -73,17 +75,95 @@ function filterQuery() {
   return params.toString();
 }
 
-async function loadOrders() {
-  adminState.orders = await adminApi(`/api/admin/orders?${filterQuery()}`);
-  renderOrders();
+async function loadOrders(force = false) {
+  if (adminState.ordersLoading && !force) return adminState.ordersLoading;
+  if (adminState.ordersLoading && force) {
+    try { await adminState.ordersLoading; } catch { /* retry below */ }
+  }
+  adminState.ordersLoading = (async () => {
+    const query = filterQuery();
+    const dashboardRequest = adminApi("/api/admin/orders");
+    const filteredRequest = query ? adminApi(`/api/admin/orders?${query}`) : dashboardRequest;
+    [adminState.dashboardOrders, adminState.orders] = await Promise.all([dashboardRequest, filteredRequest]);
+    renderOrders();
+  })();
+  try {
+    return await adminState.ordersLoading;
+  } finally {
+    adminState.ordersLoading = null;
+  }
+}
+
+function parsedLocalDate(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  const date = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isToday(value, now = new Date()) {
+  const date = parsedLocalDate(value);
+  return Boolean(date)
+    && date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+}
+
+function productNet(order) {
+  return Math.max(0, Number(order.subtotal || 0) - Number(order.discount || 0));
+}
+
+function renderDailyOverview() {
+  const orders = adminState.dashboardOrders;
+  const now = new Date();
+  const createdToday = orders.filter((order) => isToday(order.created_at, now));
+  const completedToday = orders.filter((order) => order.status === "COMPLETED" && isToday(order.closed_at || order.updated_at || order.created_at, now));
+  const cancelledToday = orders.filter((order) => order.status === "CANCELLED" && isToday(order.closed_at || order.updated_at || order.created_at, now));
+  const activeOrders = orders.filter((order) => ["NEW", "ACCEPTED", "PREPARING", "READY", "DISPATCHED"].includes(order.status));
+  const netSales = completedToday.reduce((sum, order) => sum + productNet(order), 0);
+  const deliveryFees = completedToday.reduce((sum, order) => sum + Number(order.delivery_fee || 0), 0);
+  const cashSales = completedToday.filter((order) => order.payment_method === "CASH").reduce((sum, order) => sum + productNet(order), 0);
+  const walletSales = completedToday.filter((order) => order.payment_method !== "CASH").reduce((sum, order) => sum + productNet(order), 0);
+  const onlineCount = createdToday.filter((order) => order.source === "ONLINE").length;
+  const posCount = createdToday.filter((order) => order.source === "POS").length;
+  const sourceTotal = Math.max(1, onlineCount + posCount);
+  const phones = new Set(createdToday.map((order) => String(order.customer_phone_normalized || order.customer_phone || "").replace(/\D/g, "")).filter(Boolean));
+
+  const itemStats = new Map();
+  completedToday.forEach((order) => (order.items || []).forEach((item) => {
+    const name = String(item.item_name || "صنف").trim();
+    const current = itemStats.get(name) || { quantity: 0, sales: 0 };
+    const quantity = Number(item.quantity || 0);
+    current.quantity += quantity;
+    current.sales += Number(item.unit_price || 0) * quantity;
+    itemStats.set(name, current);
+  }));
+  const topItem = [...itemStats.entries()].sort((a, b) => b[1].quantity - a[1].quantity || b[1].sales - a[1].sales)[0];
+
+  $("#adminTodayLabel").textContent = `${now.toLocaleDateString("ar-EG", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · الأرقام تتحدث تلقائيًا`;
+  $("#todayNetSales").textContent = money(netSales);
+  $("#todayCompleted").textContent = completedToday.length;
+  $("#todayAverage").textContent = money(completedToday.length ? netSales / completedToday.length : 0);
+  $("#todayActive").textContent = activeOrders.length;
+  $("#todayOrdersTotal").textContent = `${createdToday.length} طلب`;
+  $("#todayPosCount").textContent = posCount;
+  $("#todayOnlineCount").textContent = onlineCount;
+  $("#todayPosBar").style.width = `${(posCount / sourceTotal) * 100}%`;
+  $("#todayOnlineBar").style.width = `${(onlineCount / sourceTotal) * 100}%`;
+  $("#todayPaymentTotal").textContent = money(netSales);
+  $("#todayCashSales").textContent = money(cashSales);
+  $("#todayWalletSales").textContent = money(walletSales);
+  $("#todayDeliveryFees").textContent = money(deliveryFees);
+  $("#todayCancelled").textContent = cancelledToday.length;
+  $("#todayNewCustomers").textContent = phones.size;
+  $("#todayTopItem").textContent = topItem ? topItem[0] : "لا توجد مبيعات مكتملة بعد";
+  $("#todayTopItemDetails").textContent = topItem ? `${topItem[1].quantity} قطعة · ${money(topItem[1].sales)}` : "—";
 }
 
 function renderOrders() {
   const orders = adminState.orders;
-  $("#kpiOrders").textContent = orders.length;
-  $("#kpiOnline").textContent = orders.filter((row) => row.source === "ONLINE").length;
-  $("#kpiPos").textContent = orders.filter((row) => row.source === "POS").length;
-  $("#kpiRevenue").textContent = money(orders.filter((row) => row.status === "COMPLETED").reduce((sum, row) => sum + Number(row.subtotal) - Number(row.discount || 0), 0));
+  renderDailyOverview();
+  $("#filteredOrdersCount").textContent = `${orders.length} طلب`;
 
   const groups = {
     new: orders.filter((row) => row.status === "NEW"),
@@ -162,7 +242,7 @@ function issueTypeLabel(type) { return ({ NO_SHOW: "لم يستلم الطلب",
 
 async function patchOrder(id, changes) {
   await adminApi(`/api/admin/orders/${id}`, { method: "PATCH", body: JSON.stringify(changes) });
-  await loadOrders();
+  await loadOrders(true);
 }
 
 async function showProof(id) {
@@ -508,8 +588,8 @@ $$('[data-admin-view]').forEach((button) => button.addEventListener("click", () 
 $("#loginBtn").addEventListener("click", login);
 $("#adminPassword").addEventListener("keydown", (event) => { if (event.key === "Enter") login(); });
 $("#logoutBtn").addEventListener("click", () => { sessionStorage.removeItem("broost_admin_key"); location.reload(); });
-$("#refreshOrdersBtn").addEventListener("click", loadOrders);
-$("#applyOrderFilters").addEventListener("click", loadOrders);
+$("#refreshOrdersBtn").addEventListener("click", () => loadOrders(true));
+$("#applyOrderFilters").addEventListener("click", () => loadOrders(true));
 $("#customerSearchBtn").addEventListener("click", loadCustomers);
 $("#customerSearchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") loadCustomers(); });
 $("#addAreaBtn").addEventListener("click", () => openArea());

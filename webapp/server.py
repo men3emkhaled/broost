@@ -1093,6 +1093,107 @@ def customer_reliability(conn: sqlite3.Connection, phone: str | None) -> dict[st
     }
 
 
+def customer_reliability_batch(
+    conn: sqlite3.Connection, phones: list[str | None]
+) -> dict[str, dict[str, Any]]:
+    """Build the admin trust badges in a fixed number of database queries."""
+    normalized_phones = sorted({normalize_phone(phone) for phone in phones if normalize_phone(phone)})
+    if not normalized_phones:
+        return {}
+    placeholders = ",".join("?" for _ in normalized_phones)
+    stats_rows = conn.execute(
+        f"""
+        SELECT customer_phone_normalized,
+               COUNT(*) AS total_orders,
+               COALESCE(SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END), 0) AS completed_orders,
+               COALESCE(SUM(CASE WHEN status='CANCELLED' AND COALESCE(cancelled_by, '')!='TIMEOUT'
+                                 THEN 1 ELSE 0 END), 0) AS cancelled_orders,
+               COALESCE(SUM(CASE WHEN payment_method='WALLET' AND payment_status='CONFIRMED'
+                                 AND status!='CANCELLED' THEN 1 ELSE 0 END), 0) AS confirmed_wallets,
+               MAX(created_at) AS last_order_at
+        FROM orders WHERE customer_phone_normalized IN ({placeholders})
+        GROUP BY customer_phone_normalized
+        """,
+        normalized_phones,
+    ).fetchall()
+    issue_rows = conn.execute(
+        f"""
+        SELECT phone_normalized, COUNT(*) AS recorded_issues,
+               COALESCE(SUM(CASE WHEN is_resolved=0 THEN 1 ELSE 0 END), 0) AS open_issues
+        FROM customer_issues WHERE phone_normalized IN ({placeholders})
+        GROUP BY phone_normalized
+        """,
+        normalized_phones,
+    ).fetchall()
+    control_rows = conn.execute(
+        f"SELECT phone_normalized, force_trusted, is_blocked FROM customer_controls "
+        f"WHERE phone_normalized IN ({placeholders})",
+        normalized_phones,
+    ).fetchall()
+    terminal_rows = conn.execute(
+        f"""
+        SELECT customer_phone_normalized, status FROM orders
+        WHERE customer_phone_normalized IN ({placeholders})
+          AND status IN ('COMPLETED', 'CANCELLED')
+          AND NOT (status='CANCELLED' AND COALESCE(cancelled_by, '')='TIMEOUT')
+        ORDER BY customer_phone_normalized, created_at DESC, id DESC
+        """,
+        normalized_phones,
+    ).fetchall()
+
+    stats_by_phone = {row["customer_phone_normalized"]: row for row in stats_rows}
+    issues_by_phone = {row["phone_normalized"]: row for row in issue_rows}
+    controls_by_phone = {row["phone_normalized"]: row for row in control_rows}
+    terminal_by_phone: dict[str, str] = {}
+    for row in terminal_rows:
+        terminal_by_phone.setdefault(row["customer_phone_normalized"], row["status"])
+
+    result: dict[str, dict[str, Any]] = {}
+    for phone in normalized_phones:
+        stats = stats_by_phone.get(phone)
+        issues = issues_by_phone.get(phone)
+        control_row = controls_by_phone.get(phone)
+        completed = int(stats["completed_orders"] or 0) if stats else 0
+        cancelled = int(stats["cancelled_orders"] or 0) if stats else 0
+        open_issues = int(issues["open_issues"] or 0) if issues else 0
+        force_trusted = bool(control_row["force_trusted"]) if control_row else False
+        is_blocked = bool(control_row["is_blocked"]) if control_row else False
+        last_terminal_status = terminal_by_phone.get(phone)
+        if is_blocked:
+            order_mood = "ANGRY"
+        elif force_trusted or completed >= 1:
+            order_mood = "HAPPY"
+        elif open_issues or last_terminal_status == "CANCELLED":
+            order_mood = "ANGRY"
+        else:
+            order_mood = "NEUTRAL"
+        if is_blocked:
+            status, label = "BLOCKED", "محظور"
+        elif force_trusted or completed >= 1:
+            status, label = "RELIABLE", "موثوق"
+        elif open_issues or last_terminal_status == "CANCELLED":
+            status, label = "NEEDS_CONFIRMATION", "يحتاج تأكيد"
+        else:
+            status, label = "NEW", "عميل جديد"
+        result[phone] = {
+            "status": status,
+            "label": label,
+            "completed_orders": completed,
+            "cancelled_orders": cancelled,
+            "total_orders": int(stats["total_orders"] or 0) if stats else 0,
+            "open_issues": open_issues,
+            "recorded_issues": int(issues["recorded_issues"] or 0) if issues else 0,
+            "confirmed_wallets": int(stats["confirmed_wallets"] or 0) if stats else 0,
+            "last_order_at": stats["last_order_at"] if stats else None,
+            "last_terminal_status": last_terminal_status,
+            "order_mood": order_mood,
+            "needs_call": status in ("NEEDS_CONFIRMATION", "BLOCKED"),
+            "force_trusted": force_trusted,
+            "is_blocked": is_blocked,
+        }
+    return result
+
+
 def order_to_dict(conn: sqlite3.Connection, order_row: sqlite3.Row) -> dict[str, Any]:
     data = dict(order_row)
     data["items"] = [
@@ -1135,6 +1236,62 @@ def order_to_dict(conn: sqlite3.Connection, order_row: sqlite3.Row) -> dict[str,
     data.pop("proof_delete_url", None)
     data.pop("proof_storage_id", None)
     return data
+
+
+def admin_orders_to_dict(
+    conn: sqlite3.Connection, order_rows: list[sqlite3.Row]
+) -> list[dict[str, Any]]:
+    """Serialize an admin order list without per-order database round trips."""
+    if not order_rows:
+        return []
+    order_ids = [row["id"] for row in order_rows]
+    placeholders = ",".join("?" for _ in order_ids)
+    item_rows = conn.execute(
+        f"SELECT * FROM order_items WHERE order_id IN ({placeholders}) ORDER BY order_id, id",
+        order_ids,
+    ).fetchall()
+    items_by_order: dict[int, list[dict[str, Any]]] = {int(order_id): [] for order_id in order_ids}
+    for row in item_rows:
+        item = dict(row)
+        try:
+            item["extras"] = json.loads(row["extras_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item["extras"] = []
+        items_by_order.setdefault(int(row["order_id"]), []).append(item)
+
+    reliability_by_phone = customer_reliability_batch(
+        conn, [row["customer_phone"] for row in order_rows]
+    )
+    result: list[dict[str, Any]] = []
+    for row in order_rows:
+        data = dict(row)
+        data["items"] = items_by_order.get(int(row["id"]), [])
+        normalized_phone = data.get("customer_phone_normalized") or normalize_phone(
+            data.get("customer_phone")
+        )
+        data["customer_reliability"] = reliability_by_phone.get(
+            normalized_phone,
+            {
+                "status": "UNKNOWN", "label": "بدون رقم", "completed_orders": 0,
+                "cancelled_orders": 0, "total_orders": 0, "open_issues": 0,
+                "recorded_issues": 0, "confirmed_wallets": 0, "last_order_at": None,
+                "last_terminal_status": None, "order_mood": "NEUTRAL", "needs_call": False,
+                "force_trusted": False, "is_blocked": False,
+            },
+        )
+        data["loyalty"] = {
+            "points_earned": int(data.get("loyalty_points_earned") or 0),
+            "points_redeemed": int(data.get("loyalty_points_redeemed") or 0),
+            "pending_points": (
+                loyalty_points_for_paid_amount(data.get("total", 0))
+                if data.get("status") not in ("COMPLETED", "CANCELLED") else 0
+            ),
+        }
+        data["has_payment_proof"] = bool(data.get("proof_filename"))
+        for key in ("proof_filename", "proof_url", "proof_delete_url", "proof_storage_id"):
+            data.pop(key, None)
+        result.append(data)
+    return result
 
 
 def public_order_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -2183,7 +2340,7 @@ def admin_orders(
         rows = conn.execute(
             f"SELECT * FROM orders {where} ORDER BY created_at DESC LIMIT 1000", params
         ).fetchall()
-        return [order_to_dict(conn, row) for row in rows]
+        return admin_orders_to_dict(conn, rows)
 
 
 def customer_list_data(
