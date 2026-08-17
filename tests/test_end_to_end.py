@@ -1601,6 +1601,66 @@ class BroostEndToEndTest(unittest.TestCase):
         }
         self.assertEqual(repaired, remote_orders)
 
+    def test_pos_invoice_is_mirrored_immediately_and_delete_is_acknowledged(self):
+        local_order_id = 880001
+        pushed = self.request(
+            "/api/sync/pos-orders",
+            "POST",
+            {
+                "orders": [{
+                    "local_order_id": local_order_id,
+                    "fulfillment": "PICKUP",
+                    "customer_name": "عميل المطعم",
+                    "customer_phone": "",
+                    "payment_method": "CASH",
+                    "payment_status": "CASH_ON_PICKUP",
+                    "status": "PREPARING",
+                    "subtotal": 125,
+                    "delivery_fee": 0,
+                    "discount": 0,
+                    "total": 125,
+                    "cashier_name": "DR OMAR",
+                    "created_at": "2026-08-17 12:00:00",
+                    "items": [{
+                        "item_name": "فاتورة اختبار",
+                        "size_name": "عادي",
+                        "quantity": 1,
+                        "unit_price": 125,
+                        "extras": [],
+                    }],
+                }],
+            },
+            sync=True,
+        )
+        self.assertEqual(pushed["synced"], 1)
+        mirrored = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["source"] == "POS" and row["local_order_id"] == local_order_id
+        )
+        self.assertEqual(mirrored["status"], "PREPARING")
+        self.assertEqual(float(mirrored["total"]), 125)
+
+        deleted = self.request(
+            "/api/sync/pos-orders",
+            "POST",
+            {"orders": [], "deleted_local_order_ids": [local_order_id]},
+            sync=True,
+        )
+        self.assertEqual(deleted["deleted_local_order_ids"], [local_order_id])
+        self.assertFalse(any(
+            row["source"] == "POS" and row["local_order_id"] == local_order_id
+            for row in self.request("/api/admin/orders", admin=True)
+        ))
+
+        # An acknowledgement is idempotent, so a lost HTTP response is safe.
+        repeated = self.request(
+            "/api/sync/pos-orders",
+            "POST",
+            {"orders": [], "deleted_local_order_ids": [local_order_id]},
+            sync=True,
+        )
+        self.assertEqual(repeated["deleted_local_order_ids"], [local_order_id])
+
     def test_history_push_failure_does_not_block_incoming_sync_or_heartbeat(self):
         manager = OnlineSyncManager()
         calls = []

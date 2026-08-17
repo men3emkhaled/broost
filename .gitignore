@@ -145,3 +145,5 @@ chicken-mascot-logo.zip
 CLAUDE.md
 GEMINI.md
 .github/copilot-instructions.md
+pos_runtime.log*
+pos_sync.log*

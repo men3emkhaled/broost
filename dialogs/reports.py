@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Broost POS - Sales Reports & Analytics Dashboard"""
 from datetime import datetime, timedelta
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QFrame, QWidget,
@@ -128,6 +128,9 @@ class ReportsDialog(QDialog):
         self.filter_range = "day"
         self.custom_range_start = None
         self.custom_range_end = None
+        self._history_search_timer = QTimer(self)
+        self._history_search_timer.setSingleShot(True)
+        self._history_search_timer.timeout.connect(self.load_analytics)
         self.init_ui()
         self.update_shift_info_bar("day")
         self.load_analytics()
@@ -446,6 +449,17 @@ class ReportsDialog(QDialog):
         search_bar.addWidget(self.btn_delete_all)
         
         history_layout.addLayout(search_bar)
+
+        self.history_hint = QLabel(
+            "يعرض أحدث 300 فاتورة في الفترة المختارة. استخدم البحث أو اختر يومًا/شهرًا للوصول بسرعة.",
+            tab_history,
+        )
+        self.history_hint.setWordWrap(True)
+        self.history_hint.setStyleSheet(
+            "color:#64748b; background:#f8fafc; border:1px solid #e2e8f0; "
+            "border-radius:7px; padding:6px 10px; font-size:11px;"
+        )
+        history_layout.addWidget(self.history_hint)
         
         # History table
         self.history_table = QTableWidget(tab_history)
@@ -459,7 +473,7 @@ class ReportsDialog(QDialog):
         self.history_table.setColumnWidth(2, 90)
         self.history_table.setColumnWidth(3, 110)
         self.history_table.setColumnWidth(4, 95)
-        self.history_table.setColumnWidth(5, 85)
+        self.history_table.setColumnWidth(5, 115)
         header.setFixedHeight(40)
         self.history_table.verticalHeader().setDefaultSectionSize(48)
         self.history_table.verticalHeader().setVisible(False)
@@ -666,7 +680,9 @@ class ReportsDialog(QDialog):
         self.shift_info_bar.setVisible(True)
 
     def search_history(self):
-        self.load_analytics()
+        # Typing should feel immediate; wait briefly instead of recalculating all
+        # charts and rebuilding hundreds of rows after every single character.
+        self._history_search_timer.start(250)
 
     def load_analytics(self):
         _, _, start_date, end_date = self.get_selected_period()
@@ -891,7 +907,7 @@ class ReportsDialog(QDialog):
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     LEFT JOIN drivers d ON o.driver_id = d.id
                     WHERE o.created_at BETWEEN ? AND ? AND (o.id LIKE ? OR cust.phone LIKE ? OR cust.name LIKE ? OR d.name LIKE ?)
-                    ORDER BY o.id DESC
+                    ORDER BY o.id DESC LIMIT 300
                 """, (start_str, end_str, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
             else:
                 c.execute("""
@@ -899,7 +915,7 @@ class ReportsDialog(QDialog):
                     FROM orders o
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     WHERE o.created_at BETWEEN ? AND ?
-                    ORDER BY o.id DESC
+                    ORDER BY o.id DESC LIMIT 300
                 """, (start_str, end_str))
         else:
             if q:
@@ -910,7 +926,7 @@ class ReportsDialog(QDialog):
                     LEFT JOIN drivers d ON o.driver_id = d.id
                     JOIN shifts s ON o.shift_id = s.id
                     WHERE o.created_at BETWEEN ? AND ? AND s.cashier_name = ? AND (o.id LIKE ? OR cust.phone LIKE ? OR cust.name LIKE ? OR d.name LIKE ?)
-                    ORDER BY o.id DESC
+                    ORDER BY o.id DESC LIMIT 300
                 """, (start_str, end_str, cashier_filter, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
             else:
                 c.execute("""
@@ -919,18 +935,23 @@ class ReportsDialog(QDialog):
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     JOIN shifts s ON o.shift_id = s.id
                     WHERE o.created_at BETWEEN ? AND ? AND s.cashier_name = ?
-                    ORDER BY o.id DESC
+                    ORDER BY o.id DESC LIMIT 300
                 """, (start_str, end_str, cashier_filter))
                 
         history_rows = c.fetchall()
         conn.close()
         
+        self.history_table.setUpdatesEnabled(False)
         self.history_table.setRowCount(len(history_rows))
         for r_idx, (o_id, created_at, chan, pay_method, total, status, name) in enumerate(history_rows):
             self.history_table.setItem(r_idx, 0, QTableWidgetItem(f"#{o_id}"))
             
-            dt = datetime.strptime(created_at[:19], "%Y-%m-%d %H:%M:%S")
-            self.history_table.setItem(r_idx, 1, QTableWidgetItem(dt.strftime("%d/%m %I:%M %p")))
+            try:
+                dt = datetime.strptime(str(created_at)[:19], "%Y-%m-%d %H:%M:%S")
+                displayed_date = dt.strftime("%d/%m %I:%M %p")
+            except (TypeError, ValueError):
+                displayed_date = str(created_at or "—")
+            self.history_table.setItem(r_idx, 1, QTableWidgetItem(displayed_date))
             
             chan_str = "دليفري" if chan == 'DELIVERY' else "صالة"
             self.history_table.setItem(r_idx, 2, QTableWidgetItem(chan_str))
@@ -940,7 +961,12 @@ class ReportsDialog(QDialog):
             
             self.history_table.setItem(r_idx, 4, QTableWidgetItem(f"{total:,.2f} ج"))
             
-            status_str = "نشط" if status in ('PENDING', 'DISPATCHED') else "مكتمل"
+            status_str = {
+                "PENDING": "جاري",
+                "DISPATCHED": "خرج للدليفري",
+                "COMPLETED": "تم التسليم",
+                "CANCELLED": "ملغي / مرفوض",
+            }.get(status, str(status or "—"))
             self.history_table.setItem(r_idx, 5, QTableWidgetItem(status_str))
             
             # Create a cell widget layout for multiple buttons
@@ -972,6 +998,7 @@ class ReportsDialog(QDialog):
             actions_layout.addWidget(btn_del)
 
             self.history_table.setCellWidget(r_idx, 6, actions_widget)
+        self.history_table.setUpdatesEnabled(True)
 
     def view_order_receipt(self, order_id):
         parent = self.parent()

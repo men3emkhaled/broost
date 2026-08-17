@@ -133,22 +133,25 @@ function renderDailyOverview() {
   const now = new Date();
   const businessStart = currentBusinessDayStart(now);
   const createdToday = orders.filter((order) => isInBusinessDay(order.created_at, businessStart, now));
-  // Cashier reports count a completed/cancelled order in the business period
-  // where the order was created, so the website deliberately uses created_at too.
+  // A POS invoice enters the drawer immediately, while an ONLINE order becomes
+  // revenue only after successful completion. Cancelled POS orders never count.
   const completedToday = createdToday.filter((order) => order.status === "COMPLETED");
   const cancelledToday = createdToday.filter((order) => order.status === "CANCELLED");
+  const salesToday = createdToday.filter((order) =>
+    order.status === "COMPLETED" || (order.source === "POS" && order.status !== "CANCELLED")
+  );
   const activeOrders = orders.filter((order) => ["NEW", "ACCEPTED", "PREPARING", "READY", "DISPATCHED"].includes(order.status));
-  const netSales = completedToday.reduce((sum, order) => sum + productNet(order), 0);
-  const deliveryFees = completedToday.reduce((sum, order) => sum + Number(order.delivery_fee || 0), 0);
-  const cashSales = completedToday.filter((order) => order.payment_method === "CASH").reduce((sum, order) => sum + productNet(order), 0);
-  const walletSales = completedToday.filter((order) => order.payment_method !== "CASH").reduce((sum, order) => sum + productNet(order), 0);
+  const netSales = salesToday.reduce((sum, order) => sum + productNet(order), 0);
+  const deliveryFees = salesToday.reduce((sum, order) => sum + Number(order.delivery_fee || 0), 0);
+  const cashSales = salesToday.filter((order) => order.payment_method === "CASH").reduce((sum, order) => sum + productNet(order), 0);
+  const walletSales = salesToday.filter((order) => order.payment_method !== "CASH").reduce((sum, order) => sum + productNet(order), 0);
   const onlineCount = createdToday.filter((order) => order.source === "ONLINE").length;
   const posCount = createdToday.filter((order) => order.source === "POS").length;
   const sourceTotal = Math.max(1, onlineCount + posCount);
   const phones = new Set(createdToday.map((order) => String(order.customer_phone_normalized || order.customer_phone || "").replace(/\D/g, "")).filter(Boolean));
 
   const itemStats = new Map();
-  completedToday.forEach((order) => (order.items || []).forEach((item) => {
+  salesToday.forEach((order) => (order.items || []).forEach((item) => {
     const name = String(item.item_name || "صنف").trim();
     const current = itemStats.get(name) || { quantity: 0, sales: 0 };
     const quantity = Number(item.quantity || 0);
@@ -163,7 +166,7 @@ function renderDailyOverview() {
   $("#adminTodayLabel").textContent = `من ${startTime} حتى الآن · ${periodSource} · الأرقام تتحدث تلقائيًا`;
   $("#todayNetSales").textContent = money(netSales);
   $("#todayCompleted").textContent = completedToday.length;
-  $("#todayAverage").textContent = money(completedToday.length ? netSales / completedToday.length : 0);
+  $("#todayAverage").textContent = money(salesToday.length ? netSales / salesToday.length : 0);
   $("#todayActive").textContent = activeOrders.length;
   $("#todayOrdersTotal").textContent = `${createdToday.length} طلب`;
   $("#todayPosCount").textContent = posCount;
@@ -176,7 +179,7 @@ function renderDailyOverview() {
   $("#todayDeliveryFees").textContent = money(deliveryFees);
   $("#todayCancelled").textContent = cancelledToday.length;
   $("#todayNewCustomers").textContent = phones.size;
-  $("#todayTopItem").textContent = topItem ? topItem[0] : "لا توجد مبيعات مكتملة بعد";
+  $("#todayTopItem").textContent = topItem ? topItem[0] : "لا توجد مبيعات مسجلة بعد";
   $("#todayTopItemDetails").textContent = topItem ? `${topItem[1].quantity} قطعة · ${money(topItem[1].sales)}` : "—";
 }
 

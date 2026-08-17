@@ -17,10 +17,14 @@ DB_PATH = os.path.join(BASE_DIR, "broost_pos.db")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    # WAL lets background website sync work without blocking normal cashier reads.
+    connection = sqlite3.connect(DB_PATH, timeout=2.0)
+    connection.execute("PRAGMA busy_timeout=2000")
+    return connection
 
 def init_db():
     conn = get_connection()
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     
     # 1. Settings Table
@@ -250,6 +254,24 @@ def init_db():
     cursor.execute("UPDATE offers SET sync_id='offer-' || id WHERE sync_id IS NULL OR sync_id=''")
     cursor.execute("UPDATE offer_items SET sync_id='offer-item-' || id WHERE sync_id IS NULL OR sync_id=''")
     cursor.execute("UPDATE orders SET source='POS' WHERE source IS NULL OR source=''")
+    # Keep deletion tombstones until Railway confirms that the matching POS
+    # mirror was removed.  Without this, deleting the local row loses the only
+    # identifier that can tell the online dashboard to remove it too.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pos_order_deletions (
+            local_order_id INTEGER PRIMARY KEY,
+            deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_delete
+        BEFORE DELETE ON orders
+        WHEN COALESCE(OLD.source, 'POS') = 'POS'
+        BEGIN
+            INSERT OR REPLACE INTO pos_order_deletions (local_order_id, deleted_at)
+            VALUES (OLD.id, CURRENT_TIMESTAMP);
+        END
+    """)
     cursor.execute(
         "UPDATE orders SET online_status='PREPARING' "
         "WHERE source='ONLINE' AND online_status='ACCEPTED'"
@@ -262,6 +284,10 @@ def init_db():
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_items_sync_id ON offer_items(sync_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_items_offer ON offer_items(offer_id)")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_remote_id ON orders(remote_id) WHERE remote_id IS NOT NULL")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_shift_created ON orders(shift_id, created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)")
     
     conn.commit()
     

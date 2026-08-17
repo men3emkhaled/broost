@@ -458,6 +458,9 @@ class MainPOSDashboard(QMainWindow):
     """Main Restaurant checkout dashboard window."""
 
     online_order_action_finished = pyqtSignal(str, object, object)
+    print_job_finished = pyqtSignal(bool, str)
+    printer_detection_finished = pyqtSignal(object, object)
+    backup_finished = pyqtSignal(bool, str, bool)
     
     RESIZE_MARGIN = 8  # pixels from edge to trigger resize cursor
     
@@ -520,18 +523,26 @@ class MainPOSDashboard(QMainWindow):
         self.cart_items = [] # list of dicts: {id, name, size, extras: {name: price}, base_price, qty}
         
         self.init_ui()
+        self._pending_orders_snapshot = None
+        self._pending_timer_labels = {}
+        self._pending_order_cards = {}
+        self._pending_refresh_timer = QTimer(self)
+        self._pending_refresh_timer.setSingleShot(True)
+        self._pending_refresh_timer.timeout.connect(self.load_pending_delivery_orders)
         self.ensure_active_shift()
         self._current_cat_id = "offers"
         self.load_categories()
         self.load_menu_items("offers")
-        self.load_pending_delivery_orders()
+        self.load_pending_delivery_orders(force=True)
         
         # Periodic check for delayed active orders (every 5 seconds)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_pending_orders_timers)
         self.timer.start(5000)
         
-        # Automatic backups trigger once a day
+        # Backups may grow over years of reports, so they always run outside Qt.
+        self._backup_job_lock = threading.Lock()
+        self.backup_finished.connect(self._finish_backup_job)
         self.run_automated_daily_backup()
         self.backup_timer = QTimer(self)
         self.backup_timer.timeout.connect(self.run_automated_daily_backup)
@@ -555,7 +566,10 @@ class MainPOSDashboard(QMainWindow):
         except Exception as e:
             print("[Startup Config Load] Error loading printer settings:", e)
 
-        # Auto-detect physical printer on startup
+        # Printer enumeration can wait on the Windows spooler. Keep it entirely
+        # outside the GUI thread so a faulty/offline printer cannot freeze startup.
+        self._printer_detection_running = False
+        self.printer_detection_finished.connect(self._finish_printer_detection)
         self.auto_detect_printer_on_startup()
 
         # Website synchronization runs in a background thread and never blocks
@@ -564,6 +578,9 @@ class MainPOSDashboard(QMainWindow):
         self._online_alert_open = False
         self._online_order_actions = set()
         self.online_order_action_finished.connect(self._finish_online_order_action)
+        self._printer_job_lock = threading.Lock()
+        self._pending_print_jobs = 0
+        self.print_job_finished.connect(self._finish_print_job)
         self.online_sync = OnlineSyncManager(self)
         self.online_sync.connectivity_changed.connect(self.update_online_sync_status)
         self.online_sync.order_received.connect(self.handle_online_order_received)
@@ -718,11 +735,11 @@ class MainPOSDashboard(QMainWindow):
         btn_reports.clicked.connect(self.open_reports_dialog)
         header_layout.addWidget(btn_reports)
         
-        btn_backup = QPushButton("☁️ نسخة احتياطية", self.header_bar)
-        btn_backup.setFixedSize(header_control_w, header_control_h)
-        btn_backup.setObjectName("BtnDark")
-        btn_backup.clicked.connect(self.trigger_manual_backup)
-        header_layout.addWidget(btn_backup)
+        self.btn_backup = QPushButton("☁️ نسخة احتياطية", self.header_bar)
+        self.btn_backup.setFixedSize(header_control_w, header_control_h)
+        self.btn_backup.setObjectName("BtnDark")
+        self.btn_backup.clicked.connect(self.trigger_manual_backup)
+        header_layout.addWidget(self.btn_backup)
 
         btn_close_shift = QPushButton("🚪 إغلاق الوردية", self.header_bar)
         btn_close_shift.setFixedSize(header_control_w, header_control_h)
@@ -1212,7 +1229,9 @@ class MainPOSDashboard(QMainWindow):
         self.pos_splitter.setCollapsible(3, False)
         self._orders_reflow_timer = QTimer(self)
         self._orders_reflow_timer.setSingleShot(True)
-        self._orders_reflow_timer.timeout.connect(self.load_pending_delivery_orders)
+        self._orders_reflow_timer.timeout.connect(
+            lambda: self.load_pending_delivery_orders(force=True)
+        )
         self.pos_splitter.splitterMoved.connect(
             lambda *_: self._orders_reflow_timer.start(140)
         )
@@ -1794,74 +1813,73 @@ class MainPOSDashboard(QMainWindow):
             return
 
         conn = database.get_connection()
-        c = conn.cursor()
-
-        # Fetch order payment info to deduct from drawer if cash
-        c.execute("SELECT payment_method, total, status, shift_id, driver_id, COALESCE(delivery_fee, 0.0), channel, COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?", (order_id,))
-        row = c.fetchone()
+        row = conn.execute(
+            "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
+            (order_id,),
+        ).fetchone()
+        conn.close()
         if not row:
-            conn.close()
             QMessageBox.warning(self, "خطأ", f"لم يتم العثور على الطلب #{order_id}.")
             return
-
-        pay_method, order_total, status, order_shift_id, driver_id, del_fee, channel, source, remote_id = row
-        order_total = order_total or 0.0
-
+        source, remote_id = row
         if source == "ONLINE":
             if not remote_id or not hasattr(self, "online_sync"):
-                conn.close()
                 QMessageBox.critical(
                     self,
                     "تعذر الإلغاء الآمن",
                     "الطلب مرتبط بالموقع لكن رقم المزامنة غير موجود. لم يتم حذفه حتى لا تتأثر نقاط العميل.",
                 )
                 return
-            try:
-                self.online_sync.update_remote_order_now(
-                    remote_id,
-                    status="CANCELLED",
-                    cashier_name=config.ACTIVE_CASHIER_NAME,
-                )
-            except Exception as exc:
-                conn.close()
-                QMessageBox.critical(
-                    self,
-                    "تعذر إلغاء الطلب على الموقع",
-                    "لم يتم حذف الطلب من السيستم حتى لا تضيع نقاط العميل.\n"
-                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{exc}",
-                )
-                return
+            self._start_online_order_action(
+                "delete",
+                remote_id,
+                {"status": "CANCELLED", "cashier_name": config.ACTIVE_CASHIER_NAME},
+                {"local_order_id": order_id},
+            )
+            return
 
-        # Revert unsettled cash if it was dispatched
-        if driver_id and status == "DISPATCHED":
-            driver_owes = (order_total - del_fee) if pay_method == "CASH" else -del_fee
-            c.execute("UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?", (driver_owes, driver_id))
-
-        # Local cashier cash is added at checkout. Online pickup cash is only
-        # added when the order is completed, so deleting it earlier must not
-        # change the drawer.
-        if pay_method == "CASH" and order_total > 0:
-            should_deduct = (status == "COMPLETED") or (channel != "DELIVERY" and source != "ONLINE")
-            if should_deduct:
-                target_shift = order_shift_id if order_shift_id else config.ACTIVE_SHIFT_ID
-                c.execute(
-                    "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash - ?) WHERE id=?",
-                    (order_total - del_fee, target_shift)
-                )
-
-        # Delete order items then order
-        c.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
-        c.execute("DELETE FROM orders WHERE id=?", (order_id,))
-
-        conn.commit()
-        conn.close()
-
-        # Refresh drawer display
+        self._delete_order_locally(order_id)
         self.ensure_active_shift()
-        # Refresh pending orders sidebar
         self.load_pending_delivery_orders()
-
         QMessageBox.information(self, "تم الحذف", f"تم حذف الطلب #{order_id} بنجاح.")
+
+    def _delete_order_locally(self, order_id):
+        """Apply the local financial reversal after remote cancellation succeeds."""
+        conn = database.get_connection()
+        try:
+            c = conn.cursor()
+            row = c.execute(
+                "SELECT payment_method, total, status, shift_id, driver_id, "
+                "COALESCE(delivery_fee, 0.0), channel, COALESCE(source, 'POS') "
+                "FROM orders WHERE id=?",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                return False
+            pay_method, order_total, status, order_shift_id, driver_id, del_fee, channel, source = row
+            order_total = order_total or 0.0
+            if driver_id and status == "DISPATCHED":
+                driver_owes = (order_total - del_fee) if pay_method == "CASH" else -del_fee
+                c.execute(
+                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
+                    (driver_owes, driver_id),
+                )
+            if pay_method == "CASH" and order_total > 0:
+                should_deduct = status == "COMPLETED" or (
+                    channel != "DELIVERY" and source != "ONLINE"
+                )
+                if should_deduct:
+                    target_shift = order_shift_id or config.ACTIVE_SHIFT_ID
+                    c.execute(
+                        "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash - ?) WHERE id=?",
+                        (order_total - del_fee, target_shift),
+                    )
+            c.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
+            c.execute("DELETE FROM orders WHERE id=?", (order_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
 
     # ── MENU & CATEGORY LOADS ──
     def load_categories(self):
@@ -2003,13 +2021,19 @@ class MainPOSDashboard(QMainWindow):
             c.execute("SELECT id, name, base_price, is_available FROM menu_items")
         items = c.fetchall()
         
-        # Pre-query sizes for all items
+        # Load every size in one query. Category changes must stay instant even
+        # when the menu grows; one query per item made this progressively slower.
         item_sizes = {}
-        for it in items:
-            c.execute("SELECT name, price_offset FROM menu_item_sizes WHERE item_id=?", (it[0],))
-            sizes = c.fetchall()
-            if sizes:
-                item_sizes[it[0]] = sizes
+        item_ids = [int(it[0]) for it in items]
+        if item_ids:
+            placeholders = ",".join("?" for _ in item_ids)
+            c.execute(
+                f"SELECT item_id, name, price_offset FROM menu_item_sizes "
+                f"WHERE item_id IN ({placeholders}) ORDER BY id",
+                item_ids,
+            )
+            for item_id, size_name, price_offset in c.fetchall():
+                item_sizes.setdefault(item_id, []).append((size_name, price_offset))
                 
         conn.close()
         
@@ -2133,16 +2157,25 @@ class MainPOSDashboard(QMainWindow):
         offers = conn.execute(
             "SELECT id, name, offer_price FROM offers WHERE is_active=1 ORDER BY id DESC"
         ).fetchall()
+        components_by_offer = {}
+        offer_ids = [int(row[0]) for row in offers]
+        if offer_ids:
+            placeholders = ",".join("?" for _ in offer_ids)
+            component_rows = conn.execute(
+                f"""
+                SELECT oi.offer_id, oi.quantity, m.name, m.base_price, m.is_available
+                FROM offer_items oi JOIN menu_items m ON m.id=oi.menu_item_id
+                WHERE oi.offer_id IN ({placeholders}) ORDER BY oi.offer_id, oi.id
+                """,
+                offer_ids,
+            ).fetchall()
+            for offer_id, quantity, item_name, base_price, is_available in component_rows:
+                components_by_offer.setdefault(offer_id, []).append(
+                    (quantity, item_name, base_price, is_available)
+                )
         cards = []
         for offer_id, name, offer_price in offers:
-            components = conn.execute(
-                """
-                SELECT oi.quantity, m.name, m.base_price, m.is_available
-                FROM offer_items oi JOIN menu_items m ON m.id=oi.menu_item_id
-                WHERE oi.offer_id=? ORDER BY oi.id
-                """,
-                (offer_id,),
-            ).fetchall()
+            components = components_by_offer.get(offer_id, [])
             if not components or any(not row[3] for row in components):
                 continue
             regular_price = sum(int(qty) * float(price) for qty, _, price, _ in components)
@@ -2858,9 +2891,7 @@ class MainPOSDashboard(QMainWindow):
         
         # Print directly if printer is online, otherwise open preview simulation dialog
         if config.PRINTER_ONLINE:
-            from core.printing import print_text_to_printer
-            print_text_to_printer(cashier_receipt, self)
-            print_text_to_printer(kitchen_receipt, self)
+            self._print_receipts_async(cashier_receipt, kitchen_receipt)
         else:
             psim = ReceiptSimDialog(order_id, cashier_receipt, kitchen_receipt, self)
             psim.exec()
@@ -3174,17 +3205,12 @@ class MainPOSDashboard(QMainWindow):
         return "".join(html)
 
     # ── PENDING / DISPATCH CHANNELS ──
-    def load_pending_delivery_orders(self):
-        # Clean clear using deleteLater
-        while self.orders_layout.count():
-            child = self.orders_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-                
+    def load_pending_delivery_orders(self, force=False):
+        """Rebuild active-order cards only when their actual data changed."""
         conn = database.get_connection()
         c = conn.cursor()
         c.execute("""
-            SELECT o.id, o.total, o.created_at, COALESCE(cust.name, 'صالة'), 
+            SELECT o.id, o.total, o.created_at, COALESCE(cust.name, 'صالة'),
                    COALESCE(cust.address, ''), o.status, COALESCE(d.name, ''), o.channel,
                    o.cash_paid, o.payment_method, COALESCE(o.source, 'POS'),
                    COALESCE(o.public_number, ''), COALESCE(o.payment_status, ''),
@@ -3201,6 +3227,21 @@ class MainPOSDashboard(QMainWindow):
         """)
         pending = c.fetchall()
         conn.close()
+
+        snapshot = tuple(tuple(row) for row in pending)
+        if not force and snapshot == self._pending_orders_snapshot:
+            self._refresh_pending_timer_labels()
+            return
+        self._pending_orders_snapshot = snapshot
+        self._pending_timer_labels = {}
+        self._pending_order_cards = {}
+
+        # Clean clear using deleteLater. This path now runs only after a real
+        # order/status/layout change, not once every five seconds.
+        while self.orders_layout.count():
+            child = self.orders_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
         
         count = len(pending)
         
@@ -3348,6 +3389,10 @@ class MainPOSDashboard(QMainWindow):
                 f"border: 1px solid {timer_color}; border-radius: 4px; "
                 f"padding: {lbl_time_pad}; font-size: {lbl_time_font}; font-weight: bold;"
             )
+            lbl_time.setProperty(
+                "wait_level", "critical" if is_critical else "warning" if is_late else "normal"
+            )
+            self._pending_timer_labels[int(o_id)] = (lbl_time, created_at, card)
             r1.addWidget(lbl_time)
             c_lyt.addLayout(r1)
 
@@ -3426,12 +3471,32 @@ class MainPOSDashboard(QMainWindow):
                 )
                 c_lyt.addWidget(lbl_trust)
 
+            busy_label = QLabel("", card)
+            busy_label.setWordWrap(True)
+            busy_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            busy_label.setStyleSheet(
+                "background:#eff6ff; color:#1d4ed8; border:1px solid #93c5fd; "
+                "border-radius:6px; padding:5px; font-size:11px; font-weight:900;"
+            )
+            busy_label.hide()
+            c_lyt.addWidget(busy_label)
+            self._pending_order_cards[int(o_id)] = {
+                "card": card,
+                "busy_label": busy_label,
+                "button_states": [],
+            }
+
             actions_lyt = QVBoxLayout()
             actions_lyt.setSpacing(3 if self.is_small_screen else 5)
 
             r3a = QHBoxLayout()
             r3a.setSpacing(0)
-            btn_done = QPushButton("✓ خلص", card)
+            done_text = (
+                ("✓ تم التسليم" if is_narrow_card else "✓ تم التسليم والتحصيل")
+                if is_delivery else
+                "✓ تم تسليم الطلب"
+            )
+            btn_done = QPushButton(done_text, card)
             btn_done.setFixedHeight(28 if self.is_small_screen else 34)
             can_complete = not is_delivery or status == "DISPATCHED"
             btn_done.setEnabled(can_complete)
@@ -3500,7 +3565,8 @@ class MainPOSDashboard(QMainWindow):
             btn_edit.clicked.connect(lambda checked, idx=o_id: self.open_edit_order_dialog(idx))
             r3b.addWidget(btn_edit)
 
-            btn_delete = QPushButton("🗑 حذف" if is_narrow_card else "🗑", card)
+            btn_delete = QPushButton("إلغاء الطلب" if is_narrow_card else "إلغاء", card)
+            btn_delete.setToolTip("إلغاء الطلب وحذفه من الطلبات الجارية")
             btn_delete.setFixedHeight(btn_h)
             btn_delete.setMinimumWidth(0 if is_narrow_card else (30 if self.is_small_screen else 40))
             btn_delete.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -3538,64 +3604,67 @@ class MainPOSDashboard(QMainWindow):
             for row in delivery_orders:
                 add_order_card(*row)
         
-        count = len(pending)
-        
-        # Update count badge
-        if hasattr(self, 'orders_count_badge'):
-            self.orders_count_badge.setText(str(count))
-            if count > 0:
-                self.orders_count_badge.setStyleSheet(
-                    "background: #dff6dd; color: #107c10; "
-                    "border: 1px solid #107c10; border-radius: 10px; "
-                    "padding: 1px 10px; font-weight: bold; font-size: 12px;"
-                )
-            else:
-                self.orders_count_badge.setStyleSheet(
-                    "background: #f3f4f6; color: #6b7280; "
-                    "border: 1px solid #d1d5db; border-radius: 10px; "
-                    "padding: 1px 10px; font-weight: bold; font-size: 12px;"
-                )
-        
-        # Update header toggle button
-        if hasattr(self, 'btn_toggle_orders'):
-            self.btn_toggle_orders.setText(f"الطلبات الجارية ({count})")
-            if count > 0:
-                self.btn_toggle_orders.setStyleSheet("""
-                    QPushButton {
-                        background-color: #e6f2ff;
-                        color: #0078d4;
-                        border: 1px solid #b3d7ff;
-                        border-radius: 6px;
-                        padding: 6px 12px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #d0e7ff;
-                    }
-                """)
-            else:
-                self.btn_toggle_orders.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ffffff;
-                        color: #374151;
-                        border: 1px solid #d1d5db;
-                        border-radius: 6px;
-                        padding: 6px 12px;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #f9fafb;
-                    }
-                """)
-        
-
-
     def refresh_pending_orders_timers(self):
-        # Periodically refresh delay timers
-        self.load_pending_delivery_orders()
+        # Updating a clock must not destroy and recreate every order card.
+        self._refresh_pending_timer_labels()
         # Update sidebar time label
         if hasattr(self, "lbl_sidebar_time"):
             self.lbl_sidebar_time.setText(datetime.now().strftime("%I:%M %p"))
+
+    def _refresh_pending_timer_labels(self):
+        for label, created_at, card in list(self._pending_timer_labels.values()):
+            try:
+                minutes = elapsed_minutes(created_at)
+                level = "critical" if minutes >= 40 else "warning" if minutes >= 15 else "normal"
+                label.setText(f"⏱ {minutes}د")
+                if label.property("wait_level") == level:
+                    continue
+                label.setProperty("wait_level", level)
+                if level == "critical":
+                    color, background = "#dc2626", "#fee2e2"
+                elif level == "warning":
+                    color, background = "#d97706", "#fef3c7"
+                else:
+                    color, background = "#0078d4", "#e6f2ff"
+                font_size = "11px" if self.is_small_screen else "13px"
+                padding = "2px 4px" if self.is_small_screen else "2px 10px"
+                label.setStyleSheet(
+                    f"background:{background}; color:{color}; border:1px solid {color}; "
+                    f"border-radius:4px; padding:{padding}; font-size:{font_size}; font-weight:bold;"
+                )
+                card.setProperty("critical", level == "critical")
+                card.setProperty("warning", level == "warning")
+                card.style().unpolish(card)
+                card.style().polish(card)
+            except RuntimeError:
+                # A queued refresh may race with deleteLater during a real rebuild.
+                continue
+
+    def _schedule_pending_orders_refresh(self, delay=60):
+        if hasattr(self, "_pending_refresh_timer"):
+            self._pending_refresh_timer.start(max(0, int(delay)))
+
+    def _set_order_card_busy(self, order_id, message=None):
+        entry = self._pending_order_cards.get(int(order_id or 0))
+        if not entry:
+            return
+        card = entry["card"]
+        busy_label = entry["busy_label"]
+        is_busy = bool(message)
+        busy_label.setText(str(message or ""))
+        busy_label.setVisible(is_busy)
+        buttons = card.findChildren(QPushButton)
+        if is_busy:
+            entry["button_states"] = [(button, button.isEnabled()) for button in buttons]
+            for button in buttons:
+                button.setEnabled(False)
+        else:
+            for button, was_enabled in entry.get("button_states", []):
+                try:
+                    button.setEnabled(was_enabled)
+                except RuntimeError:
+                    pass
+            entry["button_states"] = []
 
     def dispatch_delivery_order(self, order_id):
         # Open driver picker selector
@@ -3638,54 +3707,65 @@ class MainPOSDashboard(QMainWindow):
             selected_txt = cb.currentText()
             driver_id = int(selected_txt.split("id: ")[1].replace(")", ""))
             driver_name = selected_txt.split(" (id:")[0]
-            
+
             conn = database.get_connection()
-            c = conn.cursor()
-            
-            # Revert old driver unsettled cash if order was already dispatched to a driver
-            c.execute(
-                "SELECT driver_id, total, payment_method, COALESCE(delivery_fee, 0.0), "
-                "status, COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
+            order_row = conn.execute(
+                "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
                 (order_id,),
+            ).fetchone()
+            conn.close()
+            if not order_row:
+                return
+            source, remote_id = order_row
+            if source == "ONLINE":
+                if not remote_id or not hasattr(self, "online_sync"):
+                    QMessageBox.critical(
+                        self,
+                        "تعذر تحديث حالة الطلب",
+                        "الطلب مرتبط بالموقع لكن رقم المزامنة غير موجود. لم يتم تكليف الطيار.",
+                    )
+                    return
+                self._start_online_order_action(
+                    "dispatch",
+                    remote_id,
+                    {
+                        "status": "DISPATCHED",
+                        "driver_name": driver_name,
+                        "cashier_name": config.ACTIVE_CASHIER_NAME,
+                    },
+                    {
+                        "local_order_id": order_id,
+                        "driver_id": driver_id,
+                        "driver_name": driver_name,
+                    },
+                )
+                return
+            self._dispatch_order_locally(order_id, driver_id)
+            self.load_pending_delivery_orders()
+
+    def _dispatch_order_locally(self, order_id, driver_id):
+        conn = database.get_connection()
+        try:
+            c = conn.cursor()
+            old_row = c.execute(
+                "SELECT driver_id, total, payment_method, COALESCE(delivery_fee, 0.0), status "
+                "FROM orders WHERE id=?",
+                (order_id,),
+            ).fetchone()
+            if not old_row:
+                return False
+            old_driver_id, total, payment_method, delivery_fee, old_status = old_row
+            if old_driver_id and old_status == "DISPATCHED":
+                old_owes = (total - delivery_fee) if payment_method == "CASH" else -delivery_fee
+                c.execute(
+                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
+                    (old_owes, old_driver_id),
+                )
+            driver_owes = (total - delivery_fee) if payment_method == "CASH" else -delivery_fee
+            c.execute(
+                "UPDATE drivers SET unsettled_cash = unsettled_cash + ? WHERE id=?",
+                (driver_owes, driver_id),
             )
-            old_row = c.fetchone()
-            if old_row:
-                old_driver_id, tot, pay_method, del_fee, old_status, source, remote_id = old_row
-                if source == "ONLINE":
-                    if not remote_id or not hasattr(self, "online_sync"):
-                        conn.close()
-                        QMessageBox.critical(
-                            self,
-                            "تعذر تحديث حالة الطلب",
-                            "الطلب مرتبط بالموقع لكن رقم المزامنة غير موجود. لم يتم تكليف الطيار.",
-                        )
-                        return
-                    try:
-                        self.online_sync.update_remote_order_now(
-                            remote_id,
-                            status="DISPATCHED",
-                            driver_name=driver_name,
-                            cashier_name=config.ACTIVE_CASHIER_NAME,
-                        )
-                    except Exception as exc:
-                        conn.close()
-                        QMessageBox.critical(
-                            self,
-                            "تعذر تحديث الموقع",
-                            "لم يتم تكليف الطيار لأن حالة العميل على الموقع لم تتحدث.\n"
-                            f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{exc}",
-                        )
-                        return
-                if old_driver_id and old_status == 'DISPATCHED':
-                    old_owes = (tot - del_fee) if pay_method == "CASH" else -del_fee
-                    c.execute("UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?", (old_owes, old_driver_id))
-            
-            # Update new driver unsettled cash
-            c.execute("SELECT total, payment_method, COALESCE(delivery_fee, 0.0) FROM orders WHERE id=?", (order_id,))
-            tot, pay_method, del_fee = c.fetchone()
-            driver_owes = (tot - del_fee) if pay_method == "CASH" else -del_fee
-            c.execute("UPDATE drivers SET unsettled_cash = unsettled_cash + ? WHERE id=?", (driver_owes, driver_id))
-            
             c.execute(
                 "UPDATE orders SET driver_id=?, status='DISPATCHED', "
                 "online_status=CASE WHEN source='ONLINE' THEN 'DISPATCHED' ELSE online_status END "
@@ -3693,9 +3773,9 @@ class MainPOSDashboard(QMainWindow):
                 (driver_id, order_id),
             )
             conn.commit()
+            return True
+        finally:
             conn.close()
-            
-            self.load_pending_delivery_orders()
 
     def complete_order(self, order_id, channel):
         """Mark any order (cashier or delivery) as COMPLETED and update shift cash."""
@@ -3709,65 +3789,71 @@ class MainPOSDashboard(QMainWindow):
             return
             
         conn = database.get_connection()
-        c = conn.cursor()
-        c.execute("SELECT total, payment_method, cash_paid, COALESCE(delivery_fee, 0.0), driver_id, status, COALESCE(source, 'POS'), remote_id, shift_id FROM orders WHERE id=?", (order_id,))
-        row = c.fetchone()
+        row = conn.execute(
+            "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
+            (order_id,),
+        ).fetchone()
+        conn.close()
         if not row:
-            conn.close()
             return
-        total, method, cash_paid, del_fee, driver_id, old_status, source, remote_id, order_shift_id = row
-
+        source, remote_id = row
         if source == "ONLINE":
             if not remote_id or not hasattr(self, "online_sync"):
-                conn.close()
                 QMessageBox.critical(
                     self,
                     "تعذر إنهاء الطلب",
                     "رقم مزامنة الطلب غير موجود. لم يتم إنهاؤه حتى لا تتأثر حسابات العميل.",
                 )
                 return
-            try:
-                self.online_sync.update_remote_order_now(
-                    remote_id,
-                    status="COMPLETED",
-                    cashier_name=config.ACTIVE_CASHIER_NAME,
-                )
-            except Exception as exc:
-                conn.close()
-                QMessageBox.critical(
-                    self,
-                    "تعذر تحديث الموقع",
-                    "لم يتم إنهاء الطلب محليًا حتى تظل الحالة والنقاط والحساب متطابقين.\n"
-                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{exc}",
-                )
-                return
-        
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute(
-            "UPDATE orders SET status='COMPLETED', closed_at=?, "
-            "online_status=CASE WHEN source='ONLINE' THEN 'COMPLETED' ELSE online_status END WHERE id=?",
-            (now_str, order_id),
-        )
-        
-        # If it was dispatched to a driver, subtract from their unsettled_cash since it's now completed/settled
-        if driver_id and old_status == 'DISPATCHED':
-            driver_owes = (total - del_fee) if method == "CASH" else -del_fee
-            c.execute("UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?", (driver_owes, driver_id))
-            
-        # Local cashier orders are added to the drawer at checkout. Online
-        # pickup orders are only paid when handed to the customer, so add them
-        # here just like delivery orders.
-        if method == "CASH" and (is_delivery or source == "ONLINE"):
-            actual_cash = cash_paid if (cash_paid is not None and cash_paid > 0.0) else total
-            actual_cash -= del_fee
-            target_shift = order_shift_id if order_shift_id else config.ACTIVE_SHIFT_ID
-            c.execute("UPDATE shifts SET expected_cash = MAX(0.0, expected_cash + ?) WHERE id=?", (actual_cash, target_shift))
-            
-        conn.commit()
-        conn.close()
-
+            self._start_online_order_action(
+                "complete",
+                remote_id,
+                {"status": "COMPLETED", "cashier_name": config.ACTIVE_CASHIER_NAME},
+                {"local_order_id": order_id, "channel": channel},
+            )
+            return
+        self._complete_order_locally(order_id, channel)
         self.load_pending_delivery_orders()
         self.ensure_active_shift()
+
+    def _complete_order_locally(self, order_id, channel):
+        is_delivery = channel == "DELIVERY"
+        conn = database.get_connection()
+        try:
+            c = conn.cursor()
+            row = c.execute(
+                "SELECT total, payment_method, cash_paid, COALESCE(delivery_fee, 0.0), "
+                "driver_id, status, COALESCE(source, 'POS'), shift_id FROM orders WHERE id=?",
+                (order_id,),
+            ).fetchone()
+            if not row:
+                return False
+            total, method, cash_paid, delivery_fee, driver_id, old_status, source, shift_id = row
+            if old_status == "COMPLETED":
+                return True
+            c.execute(
+                "UPDATE orders SET status='COMPLETED', closed_at=?, "
+                "online_status=CASE WHEN source='ONLINE' THEN 'COMPLETED' ELSE online_status END "
+                "WHERE id=?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id),
+            )
+            if driver_id and old_status == "DISPATCHED":
+                driver_owes = (total - delivery_fee) if method == "CASH" else -delivery_fee
+                c.execute(
+                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
+                    (driver_owes, driver_id),
+                )
+            if method == "CASH" and (is_delivery or source == "ONLINE"):
+                actual_cash = cash_paid if cash_paid is not None and cash_paid > 0 else total
+                target_shift = shift_id or config.ACTIVE_SHIFT_ID
+                c.execute(
+                    "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash + ?) WHERE id=?",
+                    (actual_cash - delivery_fee, target_shift),
+                )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
 
     def complete_delivery_order(self, order_id):
         """Legacy alias kept for backwards compatibility."""
@@ -4365,11 +4451,50 @@ class MainPOSDashboard(QMainWindow):
             dlg.exec()
 
     def trigger_manual_backup(self):
-        success, path = database.run_backup()
-        if success:
-            QMessageBox.information(self, "نسخة احتياطية ناجحة", f"تم حفظ نسخة احتياطية من قواعد البيانات بنجاح على المسار:\n{path}")
-        else:
-            QMessageBox.critical(self, "خطأ بالنسخ الاحتياطي", f"حدث خطأ أثناء حفظ النسخة الاحتياطية:\n{path}")
+        if self._backup_job_lock.locked():
+            QMessageBox.information(self, "النسخ يعمل", "النسخة الاحتياطية تُحفظ الآن بالفعل.")
+            return
+        self.btn_backup.setEnabled(False)
+        self.btn_backup.setText("جاري الحفظ…")
+        self._start_backup_job(manual=True)
+
+    def _start_backup_job(self, manual=False, flag_file=None, today=None):
+        if not self._backup_job_lock.acquire(blocking=False):
+            return
+
+        def worker():
+            success = False
+            result = "تعذر بدء النسخ الاحتياطي."
+            try:
+                success, result = database.run_backup()
+                if success and flag_file and today:
+                    try:
+                        with open(flag_file, "w", encoding="utf-8") as file_handle:
+                            file_handle.write(today)
+                    except Exception as exc:
+                        print(f"[Backup Engine] Could not update backup date: {exc}")
+            finally:
+                self._backup_job_lock.release()
+                self.backup_finished.emit(bool(success), str(result), bool(manual))
+
+        threading.Thread(target=worker, daemon=True, name="pos-backup").start()
+
+    def _finish_backup_job(self, success, result, manual):
+        if hasattr(self, "btn_backup"):
+            self.btn_backup.setEnabled(True)
+            self.btn_backup.setText("☁️ نسخة احتياطية")
+        if manual and success:
+            QMessageBox.information(
+                self, "نسخة احتياطية ناجحة",
+                f"تم حفظ نسخة احتياطية من قواعد البيانات بنجاح على المسار:\n{result}",
+            )
+        elif manual:
+            QMessageBox.critical(
+                self, "خطأ بالنسخ الاحتياطي",
+                f"حدث خطأ أثناء حفظ النسخة الاحتياطية:\n{result}",
+            )
+        elif success:
+            print(f"[Backup Engine] Automated daily backup saved at: {result}")
 
     def import_backup_from_file(self):
         """Validate, migrate, and restore an old Broost POS database backup."""
@@ -4493,61 +4618,78 @@ class MainPOSDashboard(QMainWindow):
                     should_backup = False
                     
         if should_backup:
-            success, path = database.run_backup()
-            if success:
-                print(f"[Backup Engine] Automated daily backup saved at: {path}")
-                try:
-                    with open(backup_flag_file, "w") as f:
-                        f.write(today_str)
-                except Exception as e:
-                    print(f"[Backup Engine] Warning: Could not write last backup date flag: {e}")
+            self._start_backup_job(
+                manual=False,
+                flag_file=backup_flag_file,
+                today=today_str,
+            )
 
     def auto_detect_printer_on_startup(self):
-        """Find the default/first physical thermal printer on startup and register it."""
-        try:
-            btn_padding = "4px 8px" if self.is_small_screen else "6px 12px"
-            btn_font_size = "11px" if self.is_small_screen else "12px"
+        """Find a physical printer without ever waiting on the Qt GUI thread."""
+        if self._printer_detection_running:
+            return
+        if not getattr(config, "PRINTER_ONLINE", True):
+            self._apply_printer_status(None, disabled=True)
+            return
 
-            if not getattr(config, "PRINTER_ONLINE", True):
-                self.btn_printer_status.setText("⚠️ طباعة تجريبية")
-                self.btn_printer_status.setToolTip("الطباعة الحقيقية متوقفة ويعمل النظام بوضع المحاكاة")
-                self.btn_printer_status.setStyleSheet(
-                    f"QPushButton {{ background-color: #fff1f2; color: #9f1239; "
-                    f"border: 1px solid #fecdd3; border-radius: 10px; "
-                    f"padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}"
-                )
-                return
+        self._printer_detection_running = True
+        self.btn_printer_status.setText("جاري فحص الطابعة…")
+        self.btn_printer_status.setToolTip("يمكنك متابعة العمل أثناء فحص طابعات ويندوز.")
+        self.btn_printer_status.setEnabled(False)
 
-            from core.printing import get_physical_printer
-            
-            # Find the physical printer (it uses cached logic, first call performs search)
-            printer = get_physical_printer()
-            
-            if printer and not printer.isNull():
-                config.SELECTED_PRINTER = printer.printerName()
-                config.PRINTER_ONLINE = True
-                
-                display_name = printer.printerName()
-                self.btn_printer_status.setText("🖨️ متصلة" if self.is_small_screen else "🖨 الطابعة متصلة")
-                self.btn_printer_status.setToolTip(f"الطابعة الحالية: {display_name}")
-                self.btn_printer_status.setStyleSheet(
-                    f"QPushButton {{ background-color: #eef9f2; color: #157347; "
-                    f"border: 1px solid #a7d9bd; border-radius: 10px; "
-                    f"padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}"
-                )
-            else:
-                # No physical printer detected, default to simulation/offline mode
-                config.PRINTER_ONLINE = False
-                config.SELECTED_PRINTER = ""
-                self.btn_printer_status.setText("⚠️ غير موصلة")
-                self.btn_printer_status.setToolTip("لا توجد طابعة فعلية موصلة")
-                self.btn_printer_status.setStyleSheet(
-                    f"QPushButton {{ background-color: #fff1f2; color: #9f1239; "
-                    f"border: 1px solid #fecdd3; border-radius: 10px; "
-                    f"padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}"
-                )
-        except Exception as e:
-            print("[Printer Auto-detect] Error finding printer on startup:", e)
+        def worker():
+            printer_name = None
+            error = None
+            try:
+                from core.printing import get_physical_printer
+                printer = get_physical_printer()
+                if printer and not printer.isNull():
+                    printer_name = printer.printerName()
+            except Exception as exc:
+                error = str(exc)
+            self.printer_detection_finished.emit(printer_name, error)
+
+        threading.Thread(target=worker, daemon=True, name="printer-detection").start()
+
+    def _finish_printer_detection(self, printer_name, error):
+        self._printer_detection_running = False
+        self.btn_printer_status.setEnabled(True)
+        if printer_name:
+            config.SELECTED_PRINTER = str(printer_name)
+            config.PRINTER_ONLINE = True
+            self._apply_printer_status(str(printer_name))
+            return
+        config.PRINTER_ONLINE = False
+        config.SELECTED_PRINTER = ""
+        self._apply_printer_status(None, error=error)
+
+    def _apply_printer_status(self, printer_name=None, disabled=False, error=None):
+        btn_padding = "4px 8px" if self.is_small_screen else "6px 12px"
+        btn_font_size = "11px" if self.is_small_screen else "12px"
+        if printer_name:
+            self.btn_printer_status.setText(
+                "🖨️ متصلة" if self.is_small_screen else "🖨 الطابعة متصلة"
+            )
+            self.btn_printer_status.setToolTip(f"الطابعة الحالية: {printer_name}")
+            background, color, border = "#eef9f2", "#157347", "#a7d9bd"
+        else:
+            self.btn_printer_status.setText(
+                "⚠️ طباعة تجريبية" if disabled else "⚠️ غير موصلة"
+            )
+            tooltip = (
+                "الطباعة الحقيقية متوقفة ويعمل النظام بوضع المحاكاة"
+                if disabled else
+                "لا توجد طابعة فعلية موصلة"
+            )
+            if error:
+                tooltip += f"\nتعذر فحص خدمة الطباعة: {error}"
+            self.btn_printer_status.setToolTip(tooltip)
+            background, color, border = "#fff1f2", "#9f1239", "#fecdd3"
+        self.btn_printer_status.setStyleSheet(
+            f"QPushButton {{ background-color: {background}; color: {color}; "
+            f"border: 1px solid {border}; border-radius: 10px; "
+            f"padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}"
+        )
 
     def toggle_printer_connection_sim(self):
         from PyQt6.QtPrintSupport import QPrinterInfo
@@ -4606,7 +4748,7 @@ class MainPOSDashboard(QMainWindow):
             elif "خطأ داخلي" in normalized:
                 status_text = "● السيرفر متصل - خطأ مزامنة"
             else:
-                status_text = "● الموقع غير متصل"
+                status_text = "● أوفلاين — إعادة تلقائية"
             self.lbl_online_sync.setText(status_text)
             self.lbl_online_sync.setProperty("connected", False)
         self.lbl_online_sync.setToolTip(str(message or ""))
@@ -4635,11 +4777,12 @@ class MainPOSDashboard(QMainWindow):
         self.load_menu_items(current_category)
 
     def handle_online_order_received(self, order):
-        self.load_pending_delivery_orders()
+        # Several Railway events can arrive in one poll; rebuild the sidebar once.
+        self._schedule_pending_orders_refresh()
         self._queue_online_alert(order)
 
     def handle_online_order_updated(self, order):
-        self.load_pending_delivery_orders()
+        self._schedule_pending_orders_refresh()
         if order.get("_event_type") in (
             "PAYMENT_PROOF_UPLOADED", "ORDER_CANCELLED_BY_CUSTOMER"
         ):
@@ -4727,12 +4870,24 @@ class MainPOSDashboard(QMainWindow):
         )
 
     def _start_online_order_action(self, action, remote_id, changes, context):
-        """Run the strict remote-first accept/reject step without freezing Qt."""
-        action_key = (action, int(remote_id))
+        """Run every remote-first order transition without blocking the Qt thread."""
+        action_key = int(remote_id)
         if action_key in self._online_order_actions:
             return
         self._online_order_actions.add(action_key)
-        action_label = "قبول" if action == "accept" else "رفض"
+        action_labels = {
+            "accept": "قبول",
+            "reject": "رفض",
+            "dispatch": "تكليف",
+            "complete": "إنهاء",
+            "delete": "إلغاء",
+        }
+        action_label = action_labels.get(action, "تحديث")
+        local_order_id = context.get("local_order_id")
+        self._set_order_card_busy(
+            local_order_id,
+            f"جاري {action_label} الطلب وتحديث الموقع…",
+        )
         if hasattr(self, "lbl_online_sync"):
             self.lbl_online_sync.setText(f"● جاري {action_label} الطلب...")
             self.lbl_online_sync.setToolTip("يتم تحديث الموقع أولًا لحماية حالة الطلب والنقاط.")
@@ -4755,55 +4910,125 @@ class MainPOSDashboard(QMainWindow):
         ).start()
 
     def _finish_online_order_action(self, action, context, error):
-        """Complete local accounting and printing on the Qt thread after Railway replies."""
+        """Apply the small local transaction after Railway replies."""
         self._online_order_actions.discard(context.get("action_key"))
+        local_order_id = context.get("local_order_id")
         if error:
-            if action == "accept":
-                title = "تعذر قبول الطلب على الموقع"
-                message = (
-                    "لم يتم قبول الطلب أو طباعته حتى تظل حالته والدفع متطابقين.\n"
-                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
-                )
-            else:
-                title = "تعذر رفض الطلب على الموقع"
-                message = (
-                    "لم يتم رفض الطلب محليًا حتى لا تضيع نقاط العميل.\n"
-                    f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
-                )
+            self._set_order_card_busy(local_order_id, None)
+            action_names = {
+                "accept": "قبول",
+                "reject": "رفض",
+                "dispatch": "تكليف",
+                "complete": "إنهاء",
+                "delete": "إلغاء",
+            }
+            action_name = action_names.get(action, "تحديث")
+            title = f"تعذر {action_name} الطلب على الموقع"
+            message = (
+                f"لم يتم {action_name} الطلب محليًا حتى تظل الحالة والحساب والنقاط متطابقة.\n"
+                f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
+            )
             QMessageBox.critical(self, title, message)
             self.online_sync.poll()
             return
 
-        local_order_id = context.get("local_order_id")
-        if action == "accept":
-            payment_status = context.get("payment_status")
-            conn = database.get_connection()
-            conn.execute(
-                "UPDATE orders SET online_status='PREPARING', payment_status=?, "
-                "shift_id=COALESCE(shift_id, ?) WHERE id=?",
-                (payment_status, config.ACTIVE_SHIFT_ID, local_order_id),
-            )
-            conn.commit()
-            conn.close()
+        try:
+            if action == "accept":
+                payment_status = context.get("payment_status")
+                conn = database.get_connection()
+                conn.execute(
+                    "UPDATE orders SET online_status='PREPARING', payment_status=?, "
+                    "shift_id=COALESCE(shift_id, ?) WHERE id=?",
+                    (payment_status, config.ACTIVE_SHIFT_ID, local_order_id),
+                )
+                conn.commit()
+                conn.close()
 
-            cashier_receipt = self.generate_receipt_text(local_order_id, "نسخة الكاشير")
-            kitchen_receipt = self.generate_receipt_text(local_order_id, "نسخة المطبخ")
-            if config.PRINTER_ONLINE:
-                print_text_to_printer(cashier_receipt, self)
-                print_text_to_printer(kitchen_receipt, self)
-            else:
-                ReceiptSimDialog(local_order_id, cashier_receipt, kitchen_receipt, self).exec()
-        elif local_order_id:
-            conn = database.get_connection()
-            conn.execute(
-                "UPDATE orders SET status='CANCELLED', online_status='CANCELLED', closed_at=? WHERE id=?",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), local_order_id),
+                cashier_receipt = self.generate_receipt_text(local_order_id, "نسخة الكاشير")
+                kitchen_receipt = self.generate_receipt_text(local_order_id, "نسخة المطبخ")
+                if config.PRINTER_ONLINE:
+                    self._print_receipts_async(cashier_receipt, kitchen_receipt)
+                else:
+                    ReceiptSimDialog(local_order_id, cashier_receipt, kitchen_receipt, self).exec()
+            elif action == "reject" and local_order_id:
+                conn = database.get_connection()
+                conn.execute(
+                    "UPDATE orders SET status='CANCELLED', online_status='CANCELLED', closed_at=? WHERE id=?",
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), local_order_id),
+                )
+                conn.commit()
+                conn.close()
+            elif action == "dispatch":
+                self._dispatch_order_locally(local_order_id, context.get("driver_id"))
+            elif action == "complete":
+                self._complete_order_locally(local_order_id, context.get("channel"))
+                self.ensure_active_shift()
+            elif action == "delete":
+                self._delete_order_locally(local_order_id)
+                self.ensure_active_shift()
+        except Exception as exc:
+            self._set_order_card_busy(local_order_id, None)
+            QMessageBox.critical(
+                self,
+                "تعذر إكمال التحديث المحلي",
+                "الموقع استقبل التحديث، لكن تعذر تحديث نسخة الكاشير محليًا. "
+                f"سيحاول البرنامج تصحيحها تلقائيًا.\n\n{exc}",
             )
-            conn.commit()
-            conn.close()
+            self.online_sync.poll()
+            return
 
-        self.load_pending_delivery_orders()
+        self._schedule_pending_orders_refresh(0)
         self.online_sync.poll()
+
+    def _print_receipts_async(self, *receipts):
+        """Queue printer I/O so a slow Windows spooler never freezes the cashier."""
+        printable = [receipt for receipt in receipts if receipt]
+        if not printable:
+            return
+        self._pending_print_jobs += 1
+        if hasattr(self, "btn_printer_status"):
+            self.btn_printer_status.setText("🖨 جاري الطباعة…")
+            self.btn_printer_status.setEnabled(False)
+            self.btn_printer_status.setToolTip("تم حفظ الطلب؛ جاري إرسال الفاتورة للطابعة في الخلفية.")
+
+        def worker():
+            ok = True
+            error = ""
+            try:
+                with self._printer_job_lock:
+                    for receipt in printable:
+                        if not print_text_to_printer(receipt, None):
+                            ok = False
+                            error = "تعذر إرسال الفاتورة للطابعة. راجع الكابل والطابعة."
+                            break
+            except Exception as exc:
+                ok = False
+                error = str(exc)
+            self.print_job_finished.emit(ok, error)
+
+        threading.Thread(target=worker, daemon=True, name="receipt-printer").start()
+
+    def _finish_print_job(self, success, error):
+        self._pending_print_jobs = max(0, self._pending_print_jobs - 1)
+        if hasattr(self, "btn_printer_status"):
+            self.btn_printer_status.setEnabled(self._pending_print_jobs == 0)
+            if self._pending_print_jobs:
+                self.btn_printer_status.setText("🖨 جاري طباعة طلب آخر…")
+            elif success:
+                self.btn_printer_status.setText(
+                    "🖨️ متصلة" if self.is_small_screen else "🖨 الطابعة متصلة"
+                )
+                self.btn_printer_status.setToolTip("تم إرسال الفاتورة للطابعة بنجاح.")
+            else:
+                self.btn_printer_status.setText("⚠️ خطأ طباعة")
+                self.btn_printer_status.setToolTip(error or "تعذر إرسال الفاتورة للطابعة.")
+        if not success:
+            QMessageBox.warning(
+                self,
+                "تعذر إرسال الفاتورة",
+                (error or "تعذر إرسال الفاتورة للطابعة.")
+                + "\nالطلب محفوظ ويمكن إعادة طباعته من سجل الفواتير.",
+            )
 
     def trigger_osk(self):
         import os

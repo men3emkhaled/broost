@@ -1,23 +1,37 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-import time
 import socket
 import subprocess
+import threading
+import time
 from PyQt6.QtWidgets import QApplication, QSplashScreen, QWidget, QVBoxLayout, QLabel, QProgressBar, QFrame
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 import database
+from core.runtime_health import install_runtime_protection, log_runtime_message
+
+
+install_runtime_protection()
+_SERVER_CHECK_LOCK = threading.Lock()
+_LAST_SERVER_START = 0.0
 
 
 def ensure_web_server_started():
-    """Keep the local ordering site available whenever the POS is running."""
+    """Start the local server when its port is down; safe to call repeatedly."""
+    global _LAST_SERVER_START
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=0.4):
-            return
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.25):
+            return True
     except OSError:
         pass
+
+    # A one-file executable needs a few seconds to unpack. Do not spawn copies
+    # while the previous recovery attempt is still starting.
+    now = time.monotonic()
+    if now - _LAST_SERVER_START < 15:
+        return False
 
     if getattr(sys, "frozen", False):
         command = [os.path.join(database.BASE_DIR, "BroostWebServer.exe")]
@@ -25,7 +39,8 @@ def ensure_web_server_started():
         command = [sys.executable, os.path.join(database.BASE_DIR, "run_web.py")]
 
     if not os.path.exists(command[-1]):
-        return
+        log_runtime_message("local-server", f"missing executable: {command[-1]}")
+        return False
 
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
@@ -37,8 +52,26 @@ def ensure_web_server_started():
             stderr=subprocess.DEVNULL,
             creationflags=creation_flags,
         )
+        _LAST_SERVER_START = now
+        log_runtime_message("local-server", "recovery start requested")
+        return True
     except OSError as exc:
-        print(f"[Web Server] Could not start: {exc}")
+        log_runtime_message("local-server", f"could not start: {exc}")
+        return False
+
+
+def ensure_web_server_started_async():
+    """Probe/recover the local site without ever pausing the cashier UI."""
+    if not _SERVER_CHECK_LOCK.acquire(blocking=False):
+        return
+
+    def worker():
+        try:
+            ensure_web_server_started()
+        finally:
+            _SERVER_CHECK_LOCK.release()
+
+    threading.Thread(target=worker, daemon=True, name="local-server-watchdog").start()
 
 class POSSplashScreen(QSplashScreen):
     def __init__(self):
@@ -117,7 +150,6 @@ if __name__ == "__main__":
             pass
 
     app = QApplication(sys.argv)
-    
     # Single instance lock using QSharedMemory
     from PyQt6.QtCore import QSharedMemory
     from PyQt6.QtWidgets import QMessageBox
@@ -137,6 +169,14 @@ if __name__ == "__main__":
         
     # Keep the shared memory reference alive
     app.shared_memory = shared_memory
+
+    # Recover the local web server throughout the whole cashier session.
+    # Start this only after the single-instance lock succeeds.
+    local_server_watchdog = QTimer(app)
+    local_server_watchdog.timeout.connect(ensure_web_server_started_async)
+    local_server_watchdog.start(8000)
+    app.local_server_watchdog = local_server_watchdog
+    ensure_web_server_started_async()
     
     # Set custom window icon (prefer .ico on Windows for crisp taskbar/title bar)
     logo_ico = os.path.join(database.BASE_DIR, "logo.ico")
@@ -151,22 +191,18 @@ if __name__ == "__main__":
     splash.show()
     
     splash.set_message("جاري الاتصال بقاعدة البيانات والتحقق منها...", 15)
-    time.sleep(0.6)
     
     database.init_db()
-    ensure_web_server_started()
     splash.set_message("جاري إعداد النسخ الاحتياطي وحماية البيانات...", 45)
-    time.sleep(0.6)
     
     splash.set_message("جاري فحص الطابعات وتجهيز واجهة المستخدم...", 75)
-    time.sleep(0.6)
     
     # Import dashboard inside here to load it after splash is visible
     from views.dashboard import MainPOSDashboard
     dashboard = MainPOSDashboard()
     
     splash.set_message("تم تحميل النظام بنجاح ✔", 100)
-    time.sleep(0.5)
+    QApplication.processEvents()
     
     splash.close()
     

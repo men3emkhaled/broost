@@ -939,6 +939,7 @@ class SyncMenuInput(BaseModel):
 
 class PosOrdersInput(BaseModel):
     orders: list[dict[str, Any]] = Field(max_length=250)
+    deleted_local_order_ids: list[int] = Field(default_factory=list, max_length=250)
 
 
 class SyncHeartbeatInput(BaseModel):
@@ -2801,18 +2802,23 @@ def sync_events(after: int = Query(default=0, ge=0)) -> dict[str, Any]:
         rows = conn.execute(
             "SELECT * FROM order_events WHERE id>? ORDER BY id LIMIT 200", (after,)
         ).fetchall()
+        order_ids = sorted({int(row["order_id"]) for row in rows})
+        serialized_orders: dict[int, dict[str, Any]] = {}
+        if order_ids:
+            placeholders = ",".join("?" for _ in order_ids)
+            order_rows = conn.execute(
+                f"SELECT * FROM orders WHERE id IN ({placeholders})", order_ids
+            ).fetchall()
+            serialized_orders = {
+                int(order["id"]): order
+                for order in admin_orders_to_dict(conn, order_rows)
+            }
         events = []
-        order_cache: dict[int, dict[str, Any] | None] = {}
         for row in rows:
             event = dict(row)
             event["payload"] = json.loads(event.pop("payload_json") or "{}")
             order_id = int(row["order_id"])
-            if order_id not in order_cache:
-                order = conn.execute(
-                    "SELECT * FROM orders WHERE id=?", (order_id,)
-                ).fetchone()
-                order_cache[order_id] = order_to_dict(conn, order) if order else None
-            event["order"] = order_cache[order_id]
+            event["order"] = serialized_orders.get(order_id)
             events.append(event)
         return {
             "events": events,
@@ -2846,7 +2852,26 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
     ignored = 0
     repaired = 0
     mappings: dict[str, int] = {}
+    deleted_local_order_ids: list[int] = []
     with db_connection(immediate=True) as conn:
+        for local_order_id in dict.fromkeys(payload.deleted_local_order_ids):
+            existing_pos = conn.execute(
+                "SELECT id, status FROM orders WHERE source='POS' AND local_order_id=?",
+                (local_order_id,),
+            ).fetchone()
+            if existing_pos:
+                if existing_pos["status"] != "CANCELLED":
+                    conn.execute(
+                        "UPDATE orders SET status='CANCELLED', cancelled_by='CASHIER', "
+                        "closed_at=?, updated_at=? WHERE id=?",
+                        (utc_now(), utc_now(), existing_pos["id"]),
+                    )
+                reconcile_order_loyalty(conn, existing_pos["id"])
+                conn.execute("DELETE FROM orders WHERE id=?", (existing_pos["id"],))
+            # Missing already means the requested final state was reached, so
+            # acknowledge it and let the POS clear its durable tombstone.
+            deleted_local_order_ids.append(int(local_order_id))
+
         for order in payload.orders:
             remote_id = order.get("remote_id")
             if remote_id:
@@ -3029,7 +3054,14 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
             )
             reconcile_order_loyalty(conn, order_id)
             synced += 1
-    return {"synced": synced, "ignored": ignored, "repaired": repaired, "mappings": mappings}
+    return {
+        "synced": synced,
+        "ignored": ignored,
+        "repaired": repaired,
+        "mappings": mappings,
+        "deleted": len(deleted_local_order_ids),
+        "deleted_local_order_ids": deleted_local_order_ids,
+    }
 
 
 @app.exception_handler(sqlite3.Error)

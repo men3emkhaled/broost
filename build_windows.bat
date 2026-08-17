@@ -33,6 +33,7 @@ if exist "dist\BroostPOS" (
 )
 if exist "dist\BroostPOS.exe" del /q "dist\BroostPOS.exe"
 if exist "dist\BroostWebServer.exe" del /q "dist\BroostWebServer.exe"
+if exist "dist\CashierSystemGuard.exe" del /q "dist\CashierSystemGuard.exe"
 if exist "BroostPOS.exe"      del /q "BroostPOS.exe"
 if exist "CashierSystem_Setup.exe" del /q "CashierSystem_Setup.exe"
 echo       Done.
@@ -46,6 +47,18 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+echo       Done.
+
+rem Step 3.5: Build the external crash-recovery guard
+echo [3.5/7] Compiling automatic recovery guard...
+python -m PyInstaller --noconfirm BroostGuard.spec
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Recovery guard build failed.
+    pause
+    exit /b 1
+)
+copy "dist\CashierSystemGuard.exe" "dist\BroostPOS\CashierSystemGuard.exe" >nul
 echo       Done.
 
 rem Step 4: Build the local website/admin server
@@ -103,7 +116,7 @@ echo [6/7] Creating launcher scripts...
 (
     echo @echo off
     echo cd /d "%%~dp0"
-    echo start "" "BroostPOS.exe"
+    echo start "" "CashierSystemGuard.exe"
 ) > "dist\BroostPOS\Launch_BroostPOS.bat"
 (
     echo @echo off

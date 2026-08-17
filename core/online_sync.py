@@ -25,8 +25,12 @@ from core import config
 from core.time_utils import to_local_db_timestamp
 
 
-SYNC_REQUEST_TIMEOUT_SECONDS = 25
+SYNC_REQUEST_TIMEOUT_SECONDS = 12
+SYNC_REQUEST_ATTEMPTS = 2
+SYNC_RETRY_DELAY_SECONDS = 0.65
+MAX_SYNC_LOG_BYTES = 2 * 1024 * 1024
 _SSL_CONTEXT: ssl.SSLContext | None = None
+_SYNC_LOG_LOCK = threading.Lock()
 
 
 def ssl_context() -> ssl.SSLContext:
@@ -75,11 +79,18 @@ def log_network_error(operation: str, url: str, exc: BaseException) -> None:
         f"{datetime.now().isoformat(timespec='seconds')} | {operation} | "
         f"{safe_url} | {type(exc).__name__}: {network_error_message(exc)}\n"
     )
-    try:
-        with open(os.path.join(database.BASE_DIR, "pos_sync.log"), "a", encoding="utf-8") as handle:
-            handle.write(line)
-    except OSError:
-        pass
+    path = os.path.join(database.BASE_DIR, "pos_sync.log")
+    with _SYNC_LOG_LOCK:
+        try:
+            if os.path.exists(path) and os.path.getsize(path) >= MAX_SYNC_LOG_BYTES:
+                previous = path + ".1"
+                if os.path.exists(previous):
+                    os.remove(previous)
+                os.replace(path, previous)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
 
 
 def strip_area_prefix(address: str | None, area_name: str | None) -> str:
@@ -112,6 +123,8 @@ class OnlineSyncManager(QObject):
         self._last_orders_push = 0.0
         self._last_cursor_probe = 0.0
         self._last_nonfatal_sync_error = ""
+        self._consecutive_failures = 0
+        self._last_success_at = 0.0
 
     def poll(self) -> None:
         if self._busy_lock.locked():
@@ -190,9 +203,17 @@ class OnlineSyncManager(QObject):
             message = "متزامن أونلاين"
             if self._last_nonfatal_sync_error:
                 message = "متصل ويستقبل الطلبات — إعادة محاولة رفع السجل تلقائيًا"
+            elif self._consecutive_failures:
+                message = "عاد الاتصال وتمت المزامنة تلقائيًا"
+            self._consecutive_failures = 0
+            self._last_success_at = time.monotonic()
             self._set_connected(True, message)
         except Exception as exc:
-            self._set_connected(False, f"غير متصل: {exc}")
+            self._consecutive_failures += 1
+            self._set_connected(
+                False,
+                f"أوفلاين — سيحاول النظام الرجوع تلقائيًا: {exc}",
+            )
         finally:
             self._busy_lock.release()
 
@@ -365,29 +386,35 @@ class OnlineSyncManager(QObject):
                 "X-Sync-Key": sync_key,
             },
         )
-        try:
-            with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
-                raw = response.read()
-                return json.loads(raw.decode("utf-8")) if raw else {}
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
+        for attempt in range(SYNC_REQUEST_ATTEMPTS):
             try:
-                detail = json.loads(raw).get("detail", raw)
-            except json.JSONDecodeError:
-                detail = raw
-            if exc.code in (401, 403):
-                message = "مفتاح المزامنة غير صحيح"
-            elif exc.code >= 500:
-                message = f"السيرفر متصل لكن المزامنة بها خطأ داخلي (HTTP {exc.code})"
-            else:
-                message = str(detail) or f"HTTP {exc.code}"
-            raise RuntimeError(message) from exc
-        except urllib.error.URLError as exc:
-            log_network_error("sync-json", request.full_url, exc)
-            raise RuntimeError(network_error_message(exc)) from exc
-        except (OSError, TimeoutError, ssl.SSLError) as exc:
-            log_network_error("sync-json", request.full_url, exc)
-            raise RuntimeError(network_error_message(exc)) from exc
+                with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
+                    raw = response.read()
+                    return json.loads(raw.decode("utf-8")) if raw else {}
+            except urllib.error.HTTPError as exc:
+                if exc.code in (500, 502, 503, 504) and attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                    log_network_error("sync-json-retry", request.full_url, exc)
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    continue
+                raw = exc.read().decode("utf-8", errors="replace")
+                try:
+                    detail = json.loads(raw).get("detail", raw)
+                except json.JSONDecodeError:
+                    detail = raw
+                if exc.code in (401, 403):
+                    message = "مفتاح المزامنة غير صحيح"
+                elif exc.code >= 500:
+                    message = f"السيرفر متصل لكن المزامنة بها خطأ داخلي (HTTP {exc.code})"
+                else:
+                    message = str(detail) or f"HTTP {exc.code}"
+                raise RuntimeError(message) from exc
+            except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
+                log_network_error("sync-json", request.full_url, exc)
+                if attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    continue
+                raise RuntimeError(network_error_message(exc)) from exc
+        raise RuntimeError("تعذر إكمال طلب المزامنة")
 
     def _request_bytes(self, path: str) -> bytes:
         base_url, sync_key = self._connection_values()
@@ -396,12 +423,23 @@ class OnlineSyncManager(QObject):
             method="GET",
             headers={"X-Sync-Key": sync_key},
         )
-        try:
-            with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
-                return response.read()
-        except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
-            log_network_error("sync-bytes", request.full_url, exc)
-            raise RuntimeError(network_error_message(exc)) from exc
+        for attempt in range(SYNC_REQUEST_ATTEMPTS):
+            try:
+                with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                log_network_error("sync-bytes", request.full_url, exc)
+                if exc.code in (500, 502, 503, 504) and attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    continue
+                raise RuntimeError(f"تعذر تنزيل الملف من السيرفر (HTTP {exc.code})") from exc
+            except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
+                log_network_error("sync-bytes", request.full_url, exc)
+                if attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    continue
+                raise RuntimeError(network_error_message(exc)) from exc
+        raise RuntimeError("تعذر تنزيل الملف من السيرفر")
 
     def _set_connected(self, connected: bool, message: str) -> None:
         if connected != self._last_connected or message != self._last_connection_message:
@@ -949,14 +987,37 @@ class OnlineSyncManager(QObject):
     def _push_pos_orders(self) -> None:
         initial = self._setting("web_initial_orders_synced", "0") != "1"
         orders = self._orders_for_sync(initial)
-        for start in range(0, len(orders), 200):
+        conn = database.get_connection()
+        try:
+            deleted_local_order_ids = [
+                int(row[0]) for row in conn.execute(
+                    "SELECT local_order_id FROM pos_order_deletions "
+                    "ORDER BY deleted_at, local_order_id LIMIT 250"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+        batches = [orders[start:start + 200] for start in range(0, len(orders), 200)]
+        if not batches and deleted_local_order_ids:
+            batches = [[]]
+        for batch_index, batch in enumerate(batches):
             result = self._request_json(
                 "/api/sync/pos-orders",
                 method="POST",
-                payload={"orders": orders[start:start + 200]},
+                payload={
+                    "orders": batch,
+                    "deleted_local_order_ids": (
+                        deleted_local_order_ids if batch_index == 0 else []
+                    ),
+                },
             )
             mappings = result.get("mappings", {}) if isinstance(result, dict) else {}
-            if mappings:
+            acknowledged_deletions = (
+                result.get("deleted_local_order_ids", [])
+                if isinstance(result, dict) else []
+            )
+            if mappings or acknowledged_deletions:
                 conn = database.get_connection()
                 try:
                     for local_order_id, remote_id in mappings.items():
@@ -968,6 +1029,11 @@ class OnlineSyncManager(QObject):
                         conn.execute(
                             "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE'",
                             (int(remote_id), int(local_order_id)),
+                        )
+                    for local_order_id in acknowledged_deletions:
+                        conn.execute(
+                            "DELETE FROM pos_order_deletions WHERE local_order_id=?",
+                            (int(local_order_id),),
                         )
                     conn.commit()
                 finally:
