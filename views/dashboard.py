@@ -38,6 +38,7 @@ from dialogs.online_order import OnlineOrderAlertDialog, CustomerCancelledOrderA
 from dialogs.daily_offers import DailyOffersDialog
 from dialogs.customers import CustomersAdminDialog
 from core.online_sync import OnlineSyncManager
+from core.order_finance import cancel_and_reconcile, reconcile_order_finance
 
 
 class ExitOptionsDialog(QDialog):
@@ -521,6 +522,12 @@ class MainPOSDashboard(QMainWindow):
         self.current_customer_address = ""
         
         self.cart_items = [] # list of dicts: {id, name, size, extras: {name: price}, base_price, qty}
+        self._checkout_in_progress = False
+        self._pending_local_deletions = {}
+        self._notification_history = []
+        self._notification_unread = 0
+        self._last_notified_connected = None
+        self._last_queue_count = 0
         
         self.init_ui()
         self._pending_orders_snapshot = None
@@ -586,6 +593,9 @@ class MainPOSDashboard(QMainWindow):
         self.online_sync.order_received.connect(self.handle_online_order_received)
         self.online_sync.order_updated.connect(self.handle_online_order_updated)
         self.online_sync.menu_applied.connect(self.reload_menu_after_online_sync)
+        self.online_sync.queued_action_completed.connect(self._finish_queued_online_action)
+        self.online_sync.queued_action_failed.connect(self._fail_queued_online_action)
+        self.online_sync.queue_changed.connect(self._update_sync_queue_count)
         self.online_sync_timer = QTimer(self)
         self.online_sync_timer.timeout.connect(self.online_sync.poll)
         self.online_sync_timer.start(5000)
@@ -624,15 +634,15 @@ class MainPOSDashboard(QMainWindow):
         self.header_bar = QFrame(self.pos_page)
         self.header_bar.setObjectName("TitleBar")
         header_control_h = 38 if self.is_small_screen else 46
-        header_control_w = 104 if self.is_small_screen else 138
+        header_control_w = 88 if self.is_small_screen else 138
         self.header_bar.setFixedHeight(54 if self.is_small_screen else 64)
         header_layout = QHBoxLayout(self.header_bar)
         header_layout.setContentsMargins(8 if self.is_small_screen else 14, 0, 8 if self.is_small_screen else 14, 0)
-        header_layout.setSpacing(6 if self.is_small_screen else 8)
+        header_layout.setSpacing(4 if self.is_small_screen else 8)
 
         brand_block = QFrame(self.header_bar)
         brand_block.setObjectName("HeaderBrand")
-        brand_block.setFixedSize(134 if self.is_small_screen else 164, header_control_h)
+        brand_block.setFixedSize(118 if self.is_small_screen else 164, header_control_h)
         brand_layout = QHBoxLayout(brand_block)
         brand_layout.setContentsMargins(7, 3, 9, 3)
         brand_layout.setSpacing(6)
@@ -688,6 +698,28 @@ class MainPOSDashboard(QMainWindow):
         self.lbl_online_sync.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.lbl_online_sync)
 
+        self.btn_sync_retry = QPushButton("↻", self.header_bar)
+        self.btn_sync_retry.setFixedSize(header_control_h, header_control_h)
+        self.btn_sync_retry.setToolTip("إعادة محاولة مزامنة الموقع الآن")
+        self.btn_sync_retry.setStyleSheet(
+            "QPushButton { background:#ffffff; color:#166534; border:1px solid #bbdfc5; "
+            "border-radius:10px; font-size:18px; font-weight:900; padding:0; } "
+            "QPushButton:hover { background:#eef9f2; }"
+        )
+        self.btn_sync_retry.clicked.connect(self.retry_online_sync)
+        header_layout.addWidget(self.btn_sync_retry)
+
+        self.btn_notifications = QPushButton("🔔 0", self.header_bar)
+        self.btn_notifications.setFixedSize(58 if self.is_small_screen else 82, header_control_h)
+        self.btn_notifications.setToolTip("الإشعارات والتنبيهات الأخيرة")
+        self.btn_notifications.setStyleSheet(
+            "QPushButton { background:#ffffff; color:#27272a; border:1px solid #dedbd7; "
+            "border-radius:10px; font-weight:900; padding:4px 7px; } "
+            "QPushButton[unread=\"true\"] { background:#fff1f2; color:#9f1239; border-color:#f4a7ba; }"
+        )
+        self.btn_notifications.clicked.connect(self.open_notification_center)
+        header_layout.addWidget(self.btn_notifications)
+
         # Active Cashier Name Label
         self.lbl_active_cashier = QLabel("👤 —", self.header_bar)
         self.lbl_active_cashier.setFixedSize(header_control_w, header_control_h)
@@ -710,38 +742,41 @@ class MainPOSDashboard(QMainWindow):
         header_layout.addStretch()
         
         # Action/Admin tools (RTL aligned via layout flow)
-        self.btn_toggle_orders = QPushButton("الطلبات الجارية (0)", self.header_bar)
+        self.btn_toggle_orders = QPushButton(
+            "الطلبات (0)" if self.is_small_screen else "الطلبات الجارية (0)",
+            self.header_bar,
+        )
         self.btn_toggle_orders.setFixedSize(header_control_w, header_control_h)
         self.btn_toggle_orders.setToolTip("إخفاء قسم الطلبات الجارية")
         self.btn_toggle_orders.setStyleSheet(f"QPushButton {{ background-color: #ffffff; color: #27272a; border: 1px solid #dedbd7; border-radius: 10px; padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }} QPushButton:hover {{ background-color: #faf5f6; border-color: #e7a4b5; }}")
         self.btn_toggle_orders.clicked.connect(self.toggle_active_orders_sidebar)
         header_layout.addWidget(self.btn_toggle_orders)
 
-        btn_drivers_mgr = QPushButton("🛵 الطيارين", self.header_bar)
+        btn_drivers_mgr = QPushButton("الطيارين" if self.is_small_screen else "🛵 الطيارين", self.header_bar)
         btn_drivers_mgr.setFixedSize(header_control_w, header_control_h)
         btn_drivers_mgr.setObjectName("BtnBlue")
         btn_drivers_mgr.clicked.connect(self.open_drivers_management)
         header_layout.addWidget(btn_drivers_mgr)
         
-        btn_menu_mgr = QPushButton("🔧 إدارة المنيو", self.header_bar)
+        btn_menu_mgr = QPushButton("المنيو" if self.is_small_screen else "🔧 إدارة المنيو", self.header_bar)
         btn_menu_mgr.setFixedSize(header_control_w, header_control_h)
         btn_menu_mgr.setObjectName("BtnDark")
         btn_menu_mgr.clicked.connect(self.open_menu_management)
         header_layout.addWidget(btn_menu_mgr)
         
-        btn_reports = QPushButton("📊 لوحة التقارير", self.header_bar)
+        btn_reports = QPushButton("التقارير" if self.is_small_screen else "📊 لوحة التقارير", self.header_bar)
         btn_reports.setFixedSize(header_control_w, header_control_h)
         btn_reports.setObjectName("BtnOrange")
         btn_reports.clicked.connect(self.open_reports_dialog)
         header_layout.addWidget(btn_reports)
         
-        self.btn_backup = QPushButton("☁️ نسخة احتياطية", self.header_bar)
+        self.btn_backup = QPushButton("نسخة" if self.is_small_screen else "☁️ نسخة احتياطية", self.header_bar)
         self.btn_backup.setFixedSize(header_control_w, header_control_h)
         self.btn_backup.setObjectName("BtnDark")
         self.btn_backup.clicked.connect(self.trigger_manual_backup)
         header_layout.addWidget(self.btn_backup)
 
-        btn_close_shift = QPushButton("🚪 إغلاق الوردية", self.header_bar)
+        btn_close_shift = QPushButton("إغلاق" if self.is_small_screen else "🚪 إغلاق الوردية", self.header_bar)
         btn_close_shift.setFixedSize(header_control_w, header_control_h)
         btn_close_shift.setObjectName("BtnPink")
         btn_close_shift.clicked.connect(self.close_shift_and_drawer)
@@ -1802,26 +1837,48 @@ class MainPOSDashboard(QMainWindow):
         QMessageBox.information(self, "تم التحديث", f"تم تحديث رصيد الدرج إلى {new_val:,.2f} ج.م بنجاح.")
 
     def delete_order_action(self, order_id):
-        """Delete an order after confirmation, deducting cash from drawer if applicable."""
-        confirm = QMessageBox.question(
-            self, "تأكيد الحذف النهائي",
-            f"هل أنت متأكد من حذف الطلب #{order_id} نهائياً من السيستم؟\n"
-            "لو كان الطلب تم تحصيله كاش، سيتم خصم قيمته من رصيد الدرج تلقائياً.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
+        """Explain every financial/sync effect before cancelling an order."""
         conn = database.get_connection()
         row = conn.execute(
-            "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
+            "SELECT payment_method, COALESCE(total, 0), status, shift_id, driver_id, "
+            "COALESCE(delivery_fee, 0), channel, COALESCE(source, 'POS'), remote_id, "
+            "COALESCE(public_number, '') FROM orders WHERE id=?",
             (order_id,),
         ).fetchone()
         conn.close()
         if not row:
             QMessageBox.warning(self, "خطأ", f"لم يتم العثور على الطلب #{order_id}.")
             return
-        source, remote_id = row
+        pay_method, total, status, _shift_id, driver_id, delivery_fee, channel, source, remote_id, public_number = row
+        drawer_amount = max(0.0, float(total or 0) - float(delivery_fee or 0))
+        affects_drawer = pay_method == "CASH" and (
+            status == "COMPLETED" or (channel != "DELIVERY" and source != "ONLINE")
+        )
+        display_number = public_number or f"#{order_id}"
+        effects = [f"إلغاء الطلب {display_number} نهائيًا."]
+        if affects_drawer and drawer_amount:
+            effects.append(f"• سيُخصم {drawer_amount:,.2f} ج.م من الدرج.")
+        else:
+            effects.append("• رصيد الدرج لن يتغير لأن المبلغ غير مضاف إليه.")
+        if driver_id and status == "DISPATCHED":
+            effects.append("• حساب الطيار سيتعدل تلقائيًا.")
+        if source == "ONLINE":
+            effects.append("• سيُلغى على الموقع أولًا وتُراجع نقاط/كود العميل تلقائيًا.")
+            effects.append("• الإلغاء الأونلاين لا يمكن التراجع عنه بعد تأكيد السيرفر.")
+        else:
+            effects.append("• سيختفي من لوحة الأونلاين عند المزامنة.")
+            effects.append("• أمامك 8 ثوانٍ للتراجع قبل تنفيذ الحذف.")
+
+        confirm = QMessageBox.question(
+            self,
+            "تأكيد الإلغاء وتأثيره",
+            "\n".join(effects),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
         if source == "ONLINE":
             if not remote_id or not hasattr(self, "online_sync"):
                 QMessageBox.critical(
@@ -1838,42 +1895,68 @@ class MainPOSDashboard(QMainWindow):
             )
             return
 
-        self._delete_order_locally(order_id)
-        self.ensure_active_shift()
-        self.load_pending_delivery_orders()
-        QMessageBox.information(self, "تم الحذف", f"تم حذف الطلب #{order_id} بنجاح.")
+        self._schedule_local_order_deletion(order_id, display_number, drawer_amount if affects_drawer else 0)
+
+    def _schedule_local_order_deletion(self, order_id, display_number, drawer_amount=0.0):
+        """Offer a short, non-blocking undo window before final local deletion."""
+        if order_id in self._pending_local_deletions:
+            return
+        token = object()
+        self._pending_local_deletions[order_id] = token
+        self._schedule_pending_orders_refresh(0)
+
+        notice = QMessageBox(self)
+        notice.setWindowTitle("الإلغاء في الانتظار")
+        impact = f" وخصم {drawer_amount:,.2f} ج.م من الدرج" if drawer_amount else ""
+        notice.setText(f"سيتم حذف الطلب {display_number}{impact} خلال 8 ثوانٍ.")
+        notice.setInformativeText("اضغط «تراجع» لو تم الإلغاء بالخطأ.")
+        undo_button = notice.addButton("تراجع", QMessageBox.ButtonRole.RejectRole)
+        notice.addButton("تنفيذ الآن", QMessageBox.ButtonRole.AcceptRole)
+        notice.setModal(False)
+
+        def undo_delete():
+            if self._pending_local_deletions.get(order_id) is not token:
+                return
+            self._pending_local_deletions.pop(order_id, None)
+            notice.close()
+            self._schedule_pending_orders_refresh(0)
+            self._record_notification("تم التراجع", f"لم يتم حذف الطلب {display_number}.", "success")
+
+        def finalize_delete():
+            if self._pending_local_deletions.get(order_id) is not token:
+                return
+            self._pending_local_deletions.pop(order_id, None)
+            notice.close()
+            if self._delete_order_locally(order_id):
+                self.ensure_active_shift()
+                self._schedule_pending_orders_refresh(0)
+                if hasattr(self, "online_sync"):
+                    self.online_sync.poll()
+                self._record_notification(
+                    "تم إلغاء الطلب",
+                    f"تم حذف الطلب {display_number} وتعديل الحسابات المرتبطة.",
+                    "success",
+                )
+
+        def handle_notice_button(button):
+            if button is undo_button:
+                undo_delete()
+            else:
+                finalize_delete()
+
+        notice.buttonClicked.connect(handle_notice_button)
+        notice.open()
+        QTimer.singleShot(8000, finalize_delete)
 
     def _delete_order_locally(self, order_id):
         """Apply the local financial reversal after remote cancellation succeeds."""
         conn = database.get_connection()
         try:
             c = conn.cursor()
-            row = c.execute(
-                "SELECT payment_method, total, status, shift_id, driver_id, "
-                "COALESCE(delivery_fee, 0.0), channel, COALESCE(source, 'POS') "
-                "FROM orders WHERE id=?",
-                (order_id,),
-            ).fetchone()
-            if not row:
+            if not cancel_and_reconcile(
+                conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
+            ):
                 return False
-            pay_method, order_total, status, order_shift_id, driver_id, del_fee, channel, source = row
-            order_total = order_total or 0.0
-            if driver_id and status == "DISPATCHED":
-                driver_owes = (order_total - del_fee) if pay_method == "CASH" else -del_fee
-                c.execute(
-                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
-                    (driver_owes, driver_id),
-                )
-            if pay_method == "CASH" and order_total > 0:
-                should_deduct = status == "COMPLETED" or (
-                    channel != "DELIVERY" and source != "ONLINE"
-                )
-                if should_deduct:
-                    target_shift = order_shift_id or config.ACTIVE_SHIFT_ID
-                    c.execute(
-                        "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash - ?) WHERE id=?",
-                        (order_total - del_fee, target_shift),
-                    )
             c.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
             c.execute("DELETE FROM orders WHERE id=?", (order_id,))
             conn.commit()
@@ -2770,6 +2853,22 @@ class MainPOSDashboard(QMainWindow):
         return max(0.0, subtotal + delivery_fee - discount)
 
     def checkout_order(self):
+        """Prevent accidental double invoices while checkout is still running."""
+        if self._checkout_in_progress:
+            return
+        self._checkout_in_progress = True
+        original_text = self.btn_submit_order.text()
+        self.btn_submit_order.setEnabled(False)
+        self.btn_submit_order.setText("جاري حفظ الفاتورة…")
+        QApplication.processEvents()
+        try:
+            return self._checkout_order_impl()
+        finally:
+            self._checkout_in_progress = False
+            self.btn_submit_order.setEnabled(True)
+            self.btn_submit_order.setText(original_text)
+
+    def _checkout_order_impl(self):
         self.hide_keyboard()
         if not self.cart_items:
             QMessageBox.warning(self, "السلة فارغة", "يرجى إضافة وجبات إلى السلة لإتمام الدفع.")
@@ -2878,9 +2977,10 @@ class MainPOSDashboard(QMainWindow):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (order_id, item["id"], item["name"], item["size"], item["qty"], item["price"], json.dumps(item_extras)))
             
-        # If it's a CASHIER order (Takeaway/Eat In) and payment method is CASH, add to shift expected cash immediately!
-        if self.payment_method.upper() == "CASH" and self.active_channel.upper() != "DELIVERY":
-            c.execute("UPDATE shifts SET expected_cash = expected_cash + ? WHERE id=?", (grand_total, config.ACTIVE_SHIFT_ID))
+        # One idempotent calculator owns drawer/driver effects for every path.
+        reconcile_order_finance(
+            conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
+        )
             
         conn.commit()
         conn.close()
@@ -3226,7 +3326,19 @@ class MainPOSDashboard(QMainWindow):
             ORDER BY o.created_at ASC
         """)
         pending = c.fetchall()
+        queued_local_ids = set()
+        try:
+            for (context_json,) in c.execute(
+                "SELECT context_json FROM pending_remote_actions"
+            ).fetchall():
+                context = json.loads(context_json or "{}")
+                if context.get("local_order_id") is not None:
+                    queued_local_ids.add(int(context["local_order_id"]))
+        except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
+            pass
         conn.close()
+        if self._pending_local_deletions:
+            pending = [row for row in pending if int(row[0]) not in self._pending_local_deletions]
 
         snapshot = tuple(tuple(row) for row in pending)
         if not force and snapshot == self._pending_orders_snapshot:
@@ -3263,7 +3375,9 @@ class MainPOSDashboard(QMainWindow):
         
         # Update header toggle button
         if hasattr(self, 'btn_toggle_orders'):
-            toggle_lbl_text = f"الطلبات الجارية ({count})"
+            toggle_lbl_text = (
+                f"الطلبات ({count})" if self.is_small_screen else f"الطلبات الجارية ({count})"
+            )
             self.btn_toggle_orders.setText(toggle_lbl_text)
             btn_padding = "4px 8px" if self.is_small_screen else "6px 12px"
             btn_font_size = "11px" if self.is_small_screen else "12px"
@@ -3497,7 +3611,7 @@ class MainPOSDashboard(QMainWindow):
                 "✓ تم تسليم الطلب"
             )
             btn_done = QPushButton(done_text, card)
-            btn_done.setFixedHeight(28 if self.is_small_screen else 34)
+            btn_done.setFixedHeight(36 if self.is_small_screen else 40)
             can_complete = not is_delivery or status == "DISPATCHED"
             btn_done.setEnabled(can_complete)
             if not can_complete:
@@ -3521,7 +3635,7 @@ class MainPOSDashboard(QMainWindow):
             r3b.setSpacing(3 if self.is_small_screen else 4)
 
             btn_font = "11px" if self.is_small_screen else "13px"
-            btn_h = 26 if self.is_small_screen else 32
+            btn_h = 34 if self.is_small_screen else 38
 
             if is_delivery and status == 'PENDING':
                 if is_online:
@@ -3582,6 +3696,11 @@ class MainPOSDashboard(QMainWindow):
 
             c_lyt.addLayout(actions_lyt)
             self.orders_layout.addWidget(card)
+            if int(o_id) in queued_local_ids:
+                self._set_order_card_busy(
+                    o_id,
+                    "محفوظ محليًا — سيتم التنفيذ تلقائيًا عند رجوع الإنترنت",
+                )
         
         # ── Section 1: Cashier / Takeaway ──
         if cashier_orders:
@@ -3747,30 +3866,16 @@ class MainPOSDashboard(QMainWindow):
         conn = database.get_connection()
         try:
             c = conn.cursor()
-            old_row = c.execute(
-                "SELECT driver_id, total, payment_method, COALESCE(delivery_fee, 0.0), status "
-                "FROM orders WHERE id=?",
-                (order_id,),
-            ).fetchone()
-            if not old_row:
+            if not c.execute("SELECT 1 FROM orders WHERE id=?", (order_id,)).fetchone():
                 return False
-            old_driver_id, total, payment_method, delivery_fee, old_status = old_row
-            if old_driver_id and old_status == "DISPATCHED":
-                old_owes = (total - delivery_fee) if payment_method == "CASH" else -delivery_fee
-                c.execute(
-                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
-                    (old_owes, old_driver_id),
-                )
-            driver_owes = (total - delivery_fee) if payment_method == "CASH" else -delivery_fee
-            c.execute(
-                "UPDATE drivers SET unsettled_cash = unsettled_cash + ? WHERE id=?",
-                (driver_owes, driver_id),
-            )
             c.execute(
                 "UPDATE orders SET driver_id=?, status='DISPATCHED', "
                 "online_status=CASE WHEN source='ONLINE' THEN 'DISPATCHED' ELSE online_status END "
                 "WHERE id=?",
                 (driver_id, order_id),
+            )
+            reconcile_order_finance(
+                conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
             )
             conn.commit()
             return True
@@ -3837,19 +3942,9 @@ class MainPOSDashboard(QMainWindow):
                 "WHERE id=?",
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id),
             )
-            if driver_id and old_status == "DISPATCHED":
-                driver_owes = (total - delivery_fee) if method == "CASH" else -delivery_fee
-                c.execute(
-                    "UPDATE drivers SET unsettled_cash = unsettled_cash - ? WHERE id=?",
-                    (driver_owes, driver_id),
-                )
-            if method == "CASH" and (is_delivery or source == "ONLINE"):
-                actual_cash = cash_paid if cash_paid is not None and cash_paid > 0 else total
-                target_shift = shift_id or config.ACTIVE_SHIFT_ID
-                c.execute(
-                    "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash + ?) WHERE id=?",
-                    (actual_cash - delivery_fee, target_shift),
-                )
+            reconcile_order_finance(
+                conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
+            )
             conn.commit()
             return True
         finally:
@@ -4732,28 +4827,132 @@ class MainPOSDashboard(QMainWindow):
                 self.btn_printer_status.setToolTip(f"الطابعة الحالية: {selected_option}")
                 self.btn_printer_status.setStyleSheet(f"QPushButton {{ background-color: #eef9f2; color: #157347; border: 1px solid #a7d9bd; border-radius: 10px; padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}")
 
+    def _record_notification(self, title, message, level="info"):
+        self._notification_history.append({
+            "time": datetime.now().strftime("%I:%M %p"),
+            "title": str(title),
+            "message": str(message),
+            "level": str(level),
+        })
+        self._notification_history = self._notification_history[-100:]
+        self._notification_unread += 1
+        self._refresh_notification_button()
+
+    def _refresh_notification_button(self):
+        if not hasattr(self, "btn_notifications"):
+            return
+        count = min(99, int(self._notification_unread))
+        self.btn_notifications.setText(f"🔔 {count}")
+        self.btn_notifications.setProperty("unread", count > 0)
+        self.btn_notifications.style().unpolish(self.btn_notifications)
+        self.btn_notifications.style().polish(self.btn_notifications)
+
+    def open_notification_center(self):
+        self._notification_unread = 0
+        self._refresh_notification_button()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("الإشعارات والتنبيهات")
+        dialog.setMinimumSize(520 if not self.is_small_screen else 420, 440)
+        layout = QVBoxLayout(dialog)
+        title = QLabel("آخر إشعارات النظام", dialog)
+        title.setStyleSheet("font-size:18px; font-weight:900; color:#111827;")
+        layout.addWidget(title)
+        history = QTextEdit(dialog)
+        history.setReadOnly(True)
+        if self._notification_history:
+            history.setPlainText("\n\n".join(
+                f"[{item['time']}] {item['title']}\n{item['message']}"
+                for item in reversed(self._notification_history)
+            ))
+        else:
+            history.setPlainText("لا توجد إشعارات حتى الآن.")
+        layout.addWidget(history, 1)
+        actions = QHBoxLayout()
+        clear_button = QPushButton("مسح السجل", dialog)
+        close_button = QPushButton("إغلاق", dialog)
+        close_button.setObjectName("BtnPrimary")
+        actions.addWidget(clear_button)
+        actions.addStretch()
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+
+        def clear_history():
+            self._notification_history.clear()
+            history.setPlainText("تم مسح سجل الإشعارات.")
+
+        clear_button.clicked.connect(clear_history)
+        close_button.clicked.connect(dialog.accept)
+        dialog.exec()
+
+    def retry_online_sync(self):
+        if not hasattr(self, "online_sync"):
+            return
+        self.btn_sync_retry.setEnabled(False)
+        self.lbl_online_sync.setText("● جاري إعادة المحاولة…")
+        self.lbl_online_sync.setToolTip("يتم فحص الاتصال ومزامنة العمليات المحفوظة الآن.")
+        self.online_sync.poll()
+        QTimer.singleShot(2500, lambda: self.btn_sync_retry.setEnabled(True))
+
+    def _update_sync_queue_count(self, count):
+        count = max(0, int(count or 0))
+        previous = self._last_queue_count
+        self._last_queue_count = count
+        if count > 0:
+            self.lbl_online_sync.setText(
+                f"● {count} منتظر" if self.is_small_screen else f"● {count} عملية منتظرة"
+            )
+            self.lbl_online_sync.setToolTip(
+                "العمليات محفوظة على الجهاز وستنفذ تلقائيًا عند رجوع الاتصال."
+            )
+        elif previous > 0:
+            self._record_notification(
+                "اكتملت المزامنة",
+                "تم تنفيذ كل العمليات التي كانت محفوظة أوفلاين.",
+                "success",
+            )
 
     def update_online_sync_status(self, connected, message):
         if not hasattr(self, "lbl_online_sync"):
             return
+        pending_count = 0
+        if hasattr(self, "online_sync"):
+            try:
+                pending_count = self.online_sync.pending_remote_action_count()
+            except Exception:
+                pending_count = self._last_queue_count
         if connected:
-            self.lbl_online_sync.setText("● متزامن أونلاين")
+            self.lbl_online_sync.setText(
+                (f"● {pending_count} منتظر" if self.is_small_screen else f"● متصل • {pending_count} منتظر")
+                if pending_count else
+                ("● متصل" if self.is_small_screen else "● متصل ومتزامن")
+            )
             self.lbl_online_sync.setProperty("connected", True)
         else:
             normalized = str(message or "")
             if "مزامنة الموقع متوقفة" in normalized:
-                status_text = "● المزامنة متوقفة"
+                status_text = "● متوقفة" if self.is_small_screen else "● المزامنة متوقفة"
             elif "مفتاح المزامنة" in normalized:
-                status_text = "● مفتاح المزامنة خطأ"
+                status_text = "● خطأ مفتاح" if self.is_small_screen else "● مفتاح المزامنة خطأ"
             elif "خطأ داخلي" in normalized:
-                status_text = "● السيرفر متصل - خطأ مزامنة"
+                status_text = "● خطأ مزامنة" if self.is_small_screen else "● السيرفر متصل - خطأ مزامنة"
             else:
-                status_text = "● أوفلاين — إعادة تلقائية"
+                status_text = "● أوفلاين" if self.is_small_screen else "● أوفلاين • يعمل محليًا"
             self.lbl_online_sync.setText(status_text)
             self.lbl_online_sync.setProperty("connected", False)
-        self.lbl_online_sync.setToolTip(str(message or ""))
+        self.lbl_online_sync.setToolTip(
+            f"{str(message or '')}\nاضغط زر ↻ لإعادة المحاولة الآن."
+        )
         self.lbl_online_sync.style().unpolish(self.lbl_online_sync)
         self.lbl_online_sync.style().polish(self.lbl_online_sync)
+        if self._last_notified_connected is not None and connected != self._last_notified_connected:
+            self._record_notification(
+                "عاد الاتصال بالموقع" if connected else "الموقع أوفلاين",
+                "تمت استعادة المزامنة تلقائيًا."
+                if connected else
+                "الكاشير يعمل محليًا والعمليات ستُحفظ حتى رجوع الاتصال.",
+                "success" if connected else "warning",
+            )
+        self._last_notified_connected = bool(connected)
 
     def open_daily_offers(self):
         dialog = DailyOffersDialog(self)
@@ -4779,6 +4978,12 @@ class MainPOSDashboard(QMainWindow):
     def handle_online_order_received(self, order):
         # Several Railway events can arrive in one poll; rebuild the sidebar once.
         self._schedule_pending_orders_refresh()
+        self._record_notification(
+            "طلب أونلاين جديد",
+            f"وصل الطلب {order.get('public_number') or order.get('id') or ''} بقيمة "
+            f"{float(order.get('total', 0) or 0):,.2f} ج.م.",
+            "order",
+        )
         self._queue_online_alert(order)
 
     def handle_online_order_updated(self, order):
@@ -4786,6 +4991,16 @@ class MainPOSDashboard(QMainWindow):
         if order.get("_event_type") in (
             "PAYMENT_PROOF_UPLOADED", "ORDER_CANCELLED_BY_CUSTOMER"
         ):
+            title = (
+                "العميل ألغى الطلب"
+                if order.get("_event_type") == "ORDER_CANCELLED_BY_CUSTOMER"
+                else "تم رفع إثبات تحويل"
+            )
+            self._record_notification(
+                title,
+                f"الطلب {order.get('public_number') or order.get('id') or ''} يحتاج مراجعتك.",
+                "warning",
+            )
             self._queue_online_alert(order)
 
     def _queue_online_alert(self, order):
@@ -4900,7 +5115,19 @@ class MainPOSDashboard(QMainWindow):
             try:
                 self.online_sync.update_remote_order_now(int(remote_id), **changes)
             except Exception as exc:
-                error = str(exc)
+                if self.online_sync.is_queueable_error(exc):
+                    try:
+                        self.online_sync.queue_remote_action(
+                            action,
+                            int(remote_id),
+                            dict(changes),
+                            action_context,
+                        )
+                        action_context["queued_offline"] = True
+                    except Exception as queue_exc:
+                        error = queue_exc
+                else:
+                    error = exc
             self.online_order_action_finished.emit(action, action_context, error)
 
         threading.Thread(
@@ -4913,6 +5140,21 @@ class MainPOSDashboard(QMainWindow):
         """Apply the small local transaction after Railway replies."""
         self._online_order_actions.discard(context.get("action_key"))
         local_order_id = context.get("local_order_id")
+        if context.get("queued_offline") and not error:
+            self._set_order_card_busy(
+                local_order_id,
+                "محفوظ محليًا — سيتم التنفيذ تلقائيًا عند رجوع الإنترنت",
+            )
+            self._record_notification(
+                "العملية محفوظة أوفلاين",
+                "لن تضيع العملية؛ سيحاول النظام تنفيذها تلقائيًا عند رجوع الاتصال.",
+                "warning",
+            )
+            self.update_online_sync_status(
+                False,
+                "أوفلاين — توجد عملية محفوظة تنتظر المزامنة",
+            )
+            return
         if error:
             self._set_order_card_busy(local_order_id, None)
             action_names = {
@@ -4926,7 +5168,7 @@ class MainPOSDashboard(QMainWindow):
             title = f"تعذر {action_name} الطلب على الموقع"
             message = (
                 f"لم يتم {action_name} الطلب محليًا حتى تظل الحالة والحساب والنقاط متطابقة.\n"
-                f"تأكد أن الموقع شغال ثم حاول مرة ثانية.\n\n{error}"
+                f"راجع بيانات الطلب ثم حاول مرة ثانية.\n\n{error}"
             )
             QMessageBox.critical(self, title, message)
             self.online_sync.poll()
@@ -4980,6 +5222,27 @@ class MainPOSDashboard(QMainWindow):
         self._schedule_pending_orders_refresh(0)
         self.online_sync.poll()
 
+    def _finish_queued_online_action(self, action, context):
+        """Complete the local half only after Railway confirms a queued action."""
+        restored_context = dict(context or {})
+        restored_context.pop("queued_offline", None)
+        self._finish_online_order_action(str(action), restored_context, None)
+        self._record_notification(
+            "تمت المزامنة",
+            "نُفذت العملية المحفوظة على الموقع وتطابقت نسخة الكاشير.",
+            "success",
+        )
+
+    def _fail_queued_online_action(self, action, context, error):
+        local_order_id = dict(context or {}).get("local_order_id")
+        self._set_order_card_busy(local_order_id, None)
+        self._schedule_pending_orders_refresh(0)
+        self._record_notification(
+            "تعذر تنفيذ عملية محفوظة",
+            f"رفض السيرفر العملية لأنها لم تعد صالحة، وتم الاحتفاظ بالحالة الصحيحة. {error}",
+            "warning",
+        )
+
     def _print_receipts_async(self, *receipts):
         """Queue printer I/O so a slow Windows spooler never freezes the cashier."""
         printable = [receipt for receipt in receipts if receipt]
@@ -5023,6 +5286,12 @@ class MainPOSDashboard(QMainWindow):
                 self.btn_printer_status.setText("⚠️ خطأ طباعة")
                 self.btn_printer_status.setToolTip(error or "تعذر إرسال الفاتورة للطابعة.")
         if not success:
+            self._record_notification(
+                "مشكلة في الطباعة",
+                (error or "تعذر إرسال الفاتورة للطابعة.")
+                + " الطلب محفوظ ويمكن إعادة طباعته من السجل.",
+                "warning",
+            )
             QMessageBox.warning(
                 self,
                 "تعذر إرسال الفاتورة",

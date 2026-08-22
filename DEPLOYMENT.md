@@ -17,6 +17,8 @@
 3. `BROOST_ADMIN_PASSWORD`: كلمة مرور لوحة الإدارة.
 4. `BROOST_SYNC_KEY`: مفتاح طويل وعشوائي، ويجب وضع نفس القيمة داخل إعدادات مزامنة برنامج الكاشير.
 
+اختياريًا اضبط `CORS_ORIGINS` على رابط Vercel النهائي. القيمة الافتراضية الآمنة تسمح برابط `broost-three.vercel.app` وروابط المعاينة التابعة لنفس المشروع فقط.
+
 لا تضف `PORT`؛ Railway يضبطه تلقائيًا. ملف `railway.toml` يحدد Docker والـhealth check وإعادة التشغيل.
 
 على Vercel أضف قيمة واحدة:
@@ -40,6 +42,7 @@ python scripts/migrate_sqlite_to_neon.py
 - افتح `https://RAILWAY-DOMAIN/health` وتأكد أن `database` تساوي `postgresql` و`proof_storage` تساوي `cloudinary`.
 - افتح رابط Vercel وتأكد أن المنيو تظهر.
 - من إعدادات المزامنة في برنامج الكاشير ضع رابط Railway ونفس `BROOST_SYNC_KEY`.
+- عند بناء نسخة Windows، `build_windows.bat` يضع رابط Railway ومفتاح المزامنة داخل إعدادات الإصدار تلقائيًا، بدون ضم ملف `.env` الكامل.
 - نفّذ طلبًا تجريبيًا نقدي، ثم طلب محفظة بصورة تحويل، ثم إلغاء طلب للتأكد من رجوع النقاط.
 
 لا ترفع `.env` أو مفاتيح Neon وCloudinary إلى GitHub؛ الملفات مهيأة لتجاهلها.

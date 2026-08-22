@@ -907,7 +907,7 @@ class ReportsDialog(QDialog):
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     LEFT JOIN drivers d ON o.driver_id = d.id
                     WHERE o.created_at BETWEEN ? AND ? AND (o.id LIKE ? OR cust.phone LIKE ? OR cust.name LIKE ? OR d.name LIKE ?)
-                    ORDER BY o.id DESC LIMIT 300
+                    ORDER BY o.id DESC
                 """, (start_str, end_str, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
             else:
                 c.execute("""
@@ -915,7 +915,7 @@ class ReportsDialog(QDialog):
                     FROM orders o
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     WHERE o.created_at BETWEEN ? AND ?
-                    ORDER BY o.id DESC LIMIT 300
+                    ORDER BY o.id DESC
                 """, (start_str, end_str))
         else:
             if q:
@@ -926,7 +926,7 @@ class ReportsDialog(QDialog):
                     LEFT JOIN drivers d ON o.driver_id = d.id
                     JOIN shifts s ON o.shift_id = s.id
                     WHERE o.created_at BETWEEN ? AND ? AND s.cashier_name = ? AND (o.id LIKE ? OR cust.phone LIKE ? OR cust.name LIKE ? OR d.name LIKE ?)
-                    ORDER BY o.id DESC LIMIT 300
+                    ORDER BY o.id DESC
                 """, (start_str, end_str, cashier_filter, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
             else:
                 c.execute("""
@@ -935,7 +935,7 @@ class ReportsDialog(QDialog):
                     LEFT JOIN customers cust ON o.customer_id = cust.id
                     JOIN shifts s ON o.shift_id = s.id
                     WHERE o.created_at BETWEEN ? AND ? AND s.cashier_name = ?
-                    ORDER BY o.id DESC LIMIT 300
+                    ORDER BY o.id DESC
                 """, (start_str, end_str, cashier_filter))
                 
         history_rows = c.fetchall()

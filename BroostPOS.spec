@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import certifi
 
 # Root project directory
 ROOT = os.path.dirname(os.path.abspath(SPEC))
@@ -11,6 +12,12 @@ for asset in ['logo.png', 'logo.ico', 'facebook-qr.jpeg']:
     if os.path.exists(src):
         datas_list.append((src, '.'))
 
+datas_list.append((certifi.where(), 'certifi'))
+defaults_file = os.path.join(ROOT, 'build', 'pos_defaults.json')
+if not os.path.exists(defaults_file):
+    raise SystemExit('Missing build/pos_defaults.json; run prepare_pos_release.py first')
+datas_list.append((defaults_file, '.'))
+
 a = Analysis(
     ['app.py'],
     pathex=[ROOT],
@@ -21,6 +28,7 @@ a = Analysis(
         'PyQt6.QtWebEngineWidgets',
         'PyQt6.QtWebEngineCore',
         'PyQt6.QtNetwork',
+        'certifi',
     ],
     hookspath=[],
     hooksconfig={},

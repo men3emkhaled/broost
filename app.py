@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-import socket
+import urllib.error
+import urllib.request
 import subprocess
 import threading
 import time
@@ -22,9 +23,10 @@ def ensure_web_server_started():
     """Start the local server when its port is down; safe to call repeatedly."""
     global _LAST_SERVER_START
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=0.25):
-            return True
-    except OSError:
+        with urllib.request.urlopen("http://127.0.0.1:8765/health", timeout=0.8) as response:
+            if response.status == 200:
+                return True
+    except (OSError, urllib.error.URLError):
         pass
 
     # A one-file executable needs a few seconds to unpack. Do not spawn copies

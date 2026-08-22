@@ -178,6 +178,7 @@ async function loadLoyalty() {
   if (!validEgyptianMobile(phone)) {
     state.loyalty = null;
     renderLoyalty();
+    updateOrderingNotice();
     updateCheckoutTotals();
     return;
   }
@@ -189,6 +190,7 @@ async function loadLoyalty() {
     state.loyalty = null;
   }
   renderLoyalty();
+  updateOrderingNotice();
   updateCheckoutTotals();
 }
 
@@ -274,6 +276,7 @@ async function submitPhoneLogin() {
     saveCustomerDraft();
     renderLoginState();
     renderLoyalty();
+    updateOrderingNotice();
     updateCheckoutTotals();
     $("#loginModal").hidden = true;
     await loadCustomerOrders(state.openOrdersAfterLogin);
@@ -394,9 +397,11 @@ async function loadStore() {
     const selectedLookupArea = $("#deliveryLookupSelect")?.value || "";
     state.store = await api("/api/store");
     $("#brandName").textContent = "بروست";
-    $("#storeStatus").textContent = state.store.ordering_enabled ? "● نستقبل طلبات الآن" : "الطلبات متوقفة مؤقتًا";
+    $("#storeStatus").textContent = state.store.ordering_enabled
+      ? (state.store.trusted_customers_only ? "● الطلب متاح للعملاء الموثوقين" : "● نستقبل طلبات الآن")
+      : "الطلبات متوقفة مؤقتًا";
     $("#storeStatus").className = `badge ${state.store.ordering_enabled ? "badge-success" : "badge-danger"}`;
-    $("#storeClosedBanner").hidden = state.store.ordering_enabled;
+    updateOrderingNotice();
     $("#walletChoiceBtn").disabled = !state.store.wallet_available;
     if (!state.store.wallet_available && state.payment === "WALLET") state.payment = "CASH";
     renderCategories();
@@ -416,6 +421,34 @@ async function loadStore() {
     $("#storeStatus").className = "badge badge-danger";
     $("#productGrid").innerHTML = `<div class="empty-state">تعذر تحميل المنيو. حاول مرة أخرى.</div>`;
   }
+}
+
+function updateOrderingNotice() {
+  const banner = $("#storeClosedBanner");
+  if (!banner || !state.store) return;
+  const whatsapp = whatsappUrl(state.store.whatsapp_number);
+  if (!state.store.ordering_enabled) {
+    const reason = !state.store.manual_ordering_enabled
+      ? "المطعم موقف استقبال الطلبات من الموقع مؤقتًا."
+      : "الكاشير غير متصل حاليًا، والمنيو وأسعار التوصيل ظاهرين عادي.";
+    banner.innerHTML = `<strong>الطلب متوقف حاليًا</strong><span>${escapeHtml(reason)}</span>`;
+    banner.hidden = false;
+    return;
+  }
+  if (state.store.trusted_customers_only) {
+    const eligible = state.loyalty?.reliability?.ordering_eligible === true;
+    if (eligible) {
+      banner.hidden = true;
+      return;
+    }
+    const action = whatsapp
+      ? ` <a class="text-link" href="${whatsapp}" target="_blank" rel="noopener">ابعت رقمك للمطعم على واتساب للتأكيد</a>.`
+      : " تواصل مع المطعم لتأكيد رقمك.";
+    banner.innerHTML = `<strong>الطلبات للعملاء الموثوقين حاليًا</strong><span>سجّل أو اكتب رقمك؛ لو أول مرة تطلب${action}</span>`;
+    banner.hidden = false;
+    return;
+  }
+  banner.hidden = true;
 }
 
 function renderCategories() {
@@ -654,6 +687,16 @@ async function submitOrder() {
   $("#customerAddress").value = address;
   if (!name || !phone) return void ($("#checkoutError").textContent = "اكتب الاسم ورقم الموبايل.");
   if (!validEgyptianMobile(phone)) return void ($("#checkoutError").textContent = PHONE_VALIDATION_MESSAGE);
+  if (state.store.trusted_customers_only) {
+    if (!state.loyalty || String(state.loyalty.customer?.phone || "") !== phone) await loadLoyalty();
+    if (state.loyalty?.reliability?.ordering_eligible !== true) {
+      const whatsapp = whatsappUrl(state.store.whatsapp_number);
+      $("#checkoutError").innerHTML = whatsapp
+        ? `الطلبات متاحة للعملاء الموثوقين فقط. <a class="text-link" href="${whatsapp}" target="_blank" rel="noopener">ابعت رقمك للمطعم على واتساب للتأكيد</a>.`
+        : "الطلبات متاحة للعملاء الموثوقين فقط. تواصل مع المطعم لتأكيد رقمك.";
+      return;
+    }
+  }
   if (state.fulfillment === "DELIVERY" && (!areaId || !address)) return void ($("#checkoutError").textContent = "اختيار القرية وكتابة العنوان بالتفصيل إجباريان للدليفري.");
   const selectedArea = state.store.areas.find((area) => String(area.id) === String(areaId));
   if (state.fulfillment === "DELIVERY" && !selectedArea?.delivery_enabled) return void ($("#checkoutError").textContent = "التوصيل للقرية المختارة متوقف حاليًا.");

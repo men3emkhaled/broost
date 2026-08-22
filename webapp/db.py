@@ -11,6 +11,7 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
+import threading
 
 from dotenv import load_dotenv
 
@@ -19,6 +20,8 @@ if os.getenv("BROOST_LOAD_DOTENV", "1") != "0":
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USING_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+_POSTGRES_POOL: Any = None
+_POOL_LOCK = threading.Lock()
 
 
 class DatabaseError(Exception):
@@ -69,9 +72,10 @@ def _postgres_sql(sql: str) -> str:
 
 
 class PostgresConnection:
-    def __init__(self, connection: Any, psycopg_module: Any):
+    def __init__(self, connection: Any, psycopg_module: Any, pool: Any = None):
         self._connection = connection
         self._psycopg = psycopg_module
+        self._pool = pool
 
     def _raise(self, exc: Exception) -> None:
         if isinstance(exc, self._psycopg.IntegrityError):
@@ -122,7 +126,10 @@ class PostgresConnection:
         self._connection.rollback()
 
     def close(self) -> None:
-        self._connection.close()
+        if self._pool is not None:
+            self._pool.putconn(self._connection)
+        else:
+            self._connection.close()
 
 
 def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnection:
@@ -136,6 +143,7 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
 
     try:
         import psycopg
+        from psycopg_pool import ConnectionPool
         from psycopg.rows import dict_row
     except ImportError as exc:  # pragma: no cover - production dependency
         raise RuntimeError(
@@ -144,12 +152,22 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
         ) from exc
 
     try:
-        connection = psycopg.connect(
-            DATABASE_URL,
-            row_factory=dict_row,
-            connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
-        )
-        return PostgresConnection(connection, psycopg)
+        global _POSTGRES_POOL
+        if _POSTGRES_POOL is None:
+            with _POOL_LOCK:
+                if _POSTGRES_POOL is None:
+                    _POSTGRES_POOL = ConnectionPool(
+                        conninfo=DATABASE_URL,
+                        min_size=1,
+                        max_size=int(os.getenv("DB_POOL_MAX_SIZE", "5")),
+                        timeout=float(os.getenv("DB_POOL_TIMEOUT", "10")),
+                        kwargs={
+                            "row_factory": dict_row,
+                            "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+                        },
+                    )
+        connection = _POSTGRES_POOL.getconn()
+        return PostgresConnection(connection, psycopg, _POSTGRES_POOL)
     except psycopg.Error as exc:  # pragma: no cover - requires live PostgreSQL
         raise DatabaseError(str(exc)) from exc
 

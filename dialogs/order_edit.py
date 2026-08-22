@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 import database
 from core.display_text import pos_text
+from core.order_finance import reconcile_order_finance
 from styles import STYLE_SHEET
 from dialogs.receipt import ReceiptSimDialog
 
@@ -564,34 +565,6 @@ class OrderEditDialog(QDialog):
         conn = database.get_connection()
         c = conn.cursor()
 
-        total_delta = grand_total - self.original_total
-
-        # Cashier cash is put in the drawer at checkout, so editing the order
-        # must apply only the difference to the same shift.
-        if self.payment_method == "CASH" and self.channel != "DELIVERY" and self.shift_id:
-            c.execute(
-                "UPDATE shifts SET expected_cash = MAX(0.0, expected_cash + ?) WHERE id=?",
-                (total_delta, self.shift_id),
-            )
-
-        # A dispatched delivery order is already part of the driver's custody.
-        # Keep that balance aligned when the order total changes.
-        if self.driver_id and self.status == "DISPATCHED":
-            old_driver_owes = (
-                self.original_total - self.delivery_fee
-                if self.payment_method == "CASH"
-                else -self.delivery_fee
-            )
-            new_driver_owes = (
-                grand_total - self.delivery_fee
-                if self.payment_method == "CASH"
-                else -self.delivery_fee
-            )
-            c.execute(
-                "UPDATE drivers SET unsettled_cash = unsettled_cash + ? WHERE id=?",
-                (new_driver_owes - old_driver_owes, self.driver_id),
-            )
-
         c.execute("""
             UPDATE orders
             SET subtotal=?, discount=?, total=?, cash_paid=?, change_due=?
@@ -606,6 +579,12 @@ class OrderEditDialog(QDialog):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (self.order_id, item["id"], item["name"], item["size"], item["qty"],
                   item["price"], json.dumps(item["extras"])))
+
+        reconcile_order_finance(
+            conn,
+            self.order_id,
+            fallback_shift_id=self.shift_id,
+        )
 
         conn.commit()
         conn.close()

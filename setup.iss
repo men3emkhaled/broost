@@ -38,8 +38,11 @@ Name: "{userdesktop}\نظام الكاشير"; Filename: "{app}\CashierSystemGua
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Broost Website - Local Router"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Broost Website - Local Router"" dir=in action=allow protocol=TCP localport=8765 profile=private remoteip=localsubnet"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Cashier System - HTTPS Sync"""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Cashier System - HTTPS Sync"" dir=out action=allow program=""{app}\BroostPOS.exe"" protocol=TCP remoteport=443 profile=any"; Flags: runhidden
 Filename: "{app}\BroostWebServer.exe"; Description: "تشغيل الموقع المحلي على الجهاز والشبكة المحلية"; Flags: nowait runhidden skipifsilent
 Filename: "{app}\CashierSystemGuard.exe"; Description: "{cm:LaunchProgram,نظام الكاشير}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Broost Website - Local Router"""; Flags: runhidden; RunOnceId: "RemoveBroostLocalNetworkRule"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Cashier System - HTTPS Sync"""; Flags: runhidden; RunOnceId: "RemoveCashierHttpsSyncRule"

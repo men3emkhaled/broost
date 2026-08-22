@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from core.time_utils import legacy_utc_to_local_db_timestamp
+from core.pos_defaults import load_pos_defaults
 
 if getattr(sys, 'frozen', False):
     # Bundled executable path
@@ -20,9 +21,18 @@ def get_connection():
     # WAL lets background website sync work without blocking normal cashier reads.
     connection = sqlite3.connect(DB_PATH, timeout=2.0)
     connection.execute("PRAGMA busy_timeout=2000")
+    connection.execute("PRAGMA foreign_keys=ON")
     return connection
 
+
+def _add_column_if_missing(cursor, table_name, column_name, column_type):
+    """Apply a SQLite migration without hiding unrelated disk/lock errors."""
+    columns = {str(row[1]) for row in cursor.execute(f"PRAGMA table_info({table_name})")}
+    if column_name not in columns:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
 def init_db():
+    pos_defaults = load_pos_defaults()
     conn = get_connection()
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
@@ -167,26 +177,10 @@ def init_db():
         )
     """)
     
-    # Migration: add discount column to existing databases if missing
-    try:
-        cursor.execute("ALTER TABLE orders ADD COLUMN discount REAL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    try:
-        cursor.execute("ALTER TABLE orders ADD COLUMN notes TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    try:
-        cursor.execute("ALTER TABLE shifts ADD COLUMN cashier_name TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    try:
-        cursor.execute("ALTER TABLE drivers ADD COLUMN unsettled_cash REAL DEFAULT 0.0")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    _add_column_if_missing(cursor, "orders", "discount", "REAL DEFAULT 0")
+    _add_column_if_missing(cursor, "orders", "notes", "TEXT")
+    _add_column_if_missing(cursor, "shifts", "cashier_name", "TEXT DEFAULT ''")
+    _add_column_if_missing(cursor, "drivers", "unsettled_cash", "REAL DEFAULT 0.0")
     
     # 10. Order Items Table
     cursor.execute("""
@@ -207,10 +201,7 @@ def init_db():
     # Keep a permanent copy of the sold item name on every invoice.  This
     # preserves historical receipts and reports even if the menu item is
     # deleted or renamed later.
-    try:
-        cursor.execute("ALTER TABLE order_items ADD COLUMN item_name TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    _add_column_if_missing(cursor, "order_items", "item_name", "TEXT")
     cursor.execute("""
         UPDATE order_items
         SET item_name = (
@@ -238,14 +229,15 @@ def init_db():
             ("customer_completed_orders", "INTEGER DEFAULT 0"),
             ("customer_issue_count", "INTEGER DEFAULT 0"),
             ("customer_confirmed_wallets", "INTEGER DEFAULT 0"),
+            ("drawer_applied", "REAL DEFAULT 0"),
+            ("driver_applied", "REAL DEFAULT 0"),
+            ("financial_shift_id", "INTEGER"),
+            ("financial_driver_id", "INTEGER"),
         ],
     }
     for table_name, columns in sync_columns.items():
         for column_name, column_type in columns:
-            try:
-                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-            except sqlite3.OperationalError:
-                pass
+            _add_column_if_missing(cursor, table_name, column_name, column_type)
 
     cursor.execute("UPDATE categories SET sync_id='category-' || id WHERE sync_id IS NULL OR sync_id=''")
     cursor.execute("UPDATE menu_items SET sync_id='item-' || id WHERE sync_id IS NULL OR sync_id=''")
@@ -272,6 +264,58 @@ def init_db():
             VALUES (OLD.id, CURRENT_TIMESTAMP);
         END
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_remote_actions (
+            action_key TEXT PRIMARY KEY,
+            action_type TEXT NOT NULL,
+            remote_id INTEGER NOT NULL,
+            changes_json TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_remote_actions_created "
+        "ON pending_remote_actions(created_at)"
+    )
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pos_order_sync_queue (
+            local_order_id INTEGER PRIMARY KEY,
+            queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_insert AFTER INSERT ON orders BEGIN
+            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
+            VALUES (NEW.id, CURRENT_TIMESTAMP);
+        END
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_update AFTER UPDATE ON orders BEGIN
+            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
+            VALUES (NEW.id, CURRENT_TIMESTAMP);
+        END
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_insert AFTER INSERT ON order_items BEGIN
+            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
+            VALUES (NEW.order_id, CURRENT_TIMESTAMP);
+        END
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_update AFTER UPDATE ON order_items BEGIN
+            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
+            VALUES (NEW.order_id, CURRENT_TIMESTAMP);
+        END
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_delete AFTER DELETE ON order_items BEGIN
+            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
+            VALUES (OLD.order_id, CURRENT_TIMESTAMP);
+        END
+    """)
     cursor.execute(
         "UPDATE orders SET online_status='PREPARING' "
         "WHERE source='ONLINE' AND online_status='ACCEPTED'"
@@ -288,6 +332,32 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_shift_created ON orders(shift_id, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)")
+
+    # Existing databases already contain these amounts in drawer/driver balances.
+    # Seed idempotency markers once without moving money.
+    if not cursor.execute(
+        "SELECT 1 FROM settings WHERE key='financial_markers_seeded_v1'"
+    ).fetchone():
+        cursor.execute("""
+            UPDATE orders SET
+                drawer_applied = CASE
+                    WHEN payment_method='CASH' AND status!='CANCELLED' AND
+                         ((COALESCE(source, 'POS')='POS' AND channel!='DELIVERY')
+                          OR status='COMPLETED')
+                    THEN MAX(0.0, COALESCE(total, 0)-COALESCE(delivery_fee, 0))
+                    ELSE 0 END,
+                financial_shift_id = shift_id,
+                driver_applied = CASE
+                    WHEN driver_id IS NOT NULL AND status='DISPATCHED'
+                    THEN CASE WHEN payment_method='CASH'
+                              THEN COALESCE(total, 0)-COALESCE(delivery_fee, 0)
+                              ELSE -COALESCE(delivery_fee, 0) END
+                    ELSE 0 END,
+                financial_driver_id = CASE WHEN status='DISPATCHED' THEN driver_id ELSE NULL END
+        """)
+        cursor.execute(
+            "INSERT INTO settings(key, value) VALUES ('financial_markers_seeded_v1', '1')"
+        )
     
     conn.commit()
     
@@ -308,8 +378,8 @@ def init_db():
                      ("selected_printer", ""),
                      ("master_password", "9999"),
                      ("web_sync_enabled", "1"),
-                     ("web_server_url", "http://127.0.0.1:8765"),
-                     ("web_sync_key", "broost-local-sync"),
+                     ("web_server_url", pos_defaults["server_url"]),
+                     ("web_sync_key", pos_defaults["sync_key"]),
                      ("web_sync_epoch", ""),
                      ("web_last_event_id", "0"),
                      ("web_menu_version", "0"),
@@ -548,12 +618,8 @@ def get_business_day_start():
     """
     Returns the start datetime of the current business day.
 
-    Logic:
-    - If a shift was closed today (after 8 AM), the business day starts
-      from the last shift's closed_at time.
-    - Otherwise, the business day starts at 08:00 AM of the current calendar day.
-
-    This handles restaurants that open at 8 AM and close after midnight.
+    The restaurant day is always 08:00 AM to 08:00 AM. Closing a shift must
+    never move the reporting boundary and hide sales made earlier that day.
     """
     from datetime import datetime
     now = datetime.now()
@@ -565,24 +631,7 @@ def get_business_day_start():
     if now < today_8am:
         today_8am = today_8am - timedelta(days=1)
 
-    try:
-        conn = get_connection()
-        c = conn.cursor()
-        # Find the most recent closed shift (closed_at after our 8am anchor)
-        c.execute(
-            "SELECT closed_at FROM shifts WHERE closed_at IS NOT NULL AND closed_at >= ? ORDER BY closed_at DESC LIMIT 1",
-            (today_8am.strftime("%Y-%m-%d %H:%M:%S"),)
-        )
-        row = c.fetchone()
-        conn.close()
-
-        if row:
-            last_close = datetime.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S")
-            return last_close  # Business day starts from last shift closing
-    except Exception:
-        pass
-
-    return today_8am  # Default: 8 AM
+    return today_8am
 
 
 def run_backup(prefix="broost_pos_backup"):

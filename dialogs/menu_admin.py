@@ -2,6 +2,8 @@
 """Broost POS - Menu Items & Categories Administration Dialog"""
 import sqlite3
 from PyQt6.QtCore import Qt
+import uuid
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QScrollArea, QWidget, QMessageBox,
@@ -233,7 +235,10 @@ class MenuAdminDialog(QDialog):
         conn = database.get_connection()
         c = conn.cursor()
         try:
-            c.execute("INSERT INTO categories (name, sort_order) VALUES (?, 100)", (name,))
+            c.execute(
+                "INSERT INTO categories (sync_id, name, sort_order) VALUES (?, ?, 100)",
+                (f"category-{uuid.uuid4().hex}", name),
+            )
             conn.commit()
             new_id = c.lastrowid
             self.txt_new_cat.clear()
@@ -258,6 +263,14 @@ class MenuAdminDialog(QDialog):
         c = conn.cursor()
         try:
             # Delete items belonging to this category
+            item_ids = [row[0] for row in c.execute(
+                "SELECT id FROM menu_items WHERE category_id=?", (cat_id,)
+            ).fetchall()]
+            for item_id in item_ids:
+                c.execute("DELETE FROM offer_items WHERE menu_item_id=?", (item_id,))
+                c.execute("DELETE FROM menu_item_sizes WHERE item_id=?", (item_id,))
+                c.execute("DELETE FROM menu_item_extras WHERE item_id=?", (item_id,))
+            c.execute("DELETE FROM offers WHERE id NOT IN (SELECT DISTINCT offer_id FROM offer_items)")
             c.execute("DELETE FROM menu_items WHERE category_id=?", (cat_id,))
             c.execute("DELETE FROM categories WHERE id=?", (cat_id,))
             conn.commit()
@@ -402,7 +415,11 @@ class MenuAdminDialog(QDialog):
         conn = database.get_connection()
         c = conn.cursor()
         try:
-            c.execute("INSERT INTO menu_items (category_id, name, base_price, is_available) VALUES (?, ?, ?, 1)", (self.selected_category_id, name, price))
+            c.execute(
+                "INSERT INTO menu_items (sync_id, category_id, name, base_price, is_available) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (f"item-{uuid.uuid4().hex}", self.selected_category_id, name, price),
+            )
             conn.commit()
             self.txt_new_prod_name.clear()
             self.txt_new_prod_price.clear()
@@ -424,6 +441,10 @@ class MenuAdminDialog(QDialog):
         conn = database.get_connection()
         c = conn.cursor()
         try:
+            c.execute("DELETE FROM offer_items WHERE menu_item_id=?", (item_id,))
+            c.execute("DELETE FROM offers WHERE id NOT IN (SELECT DISTINCT offer_id FROM offer_items)")
+            c.execute("DELETE FROM menu_item_sizes WHERE item_id=?", (item_id,))
+            c.execute("DELETE FROM menu_item_extras WHERE item_id=?", (item_id,))
             c.execute("DELETE FROM menu_items WHERE id=?", (item_id,))
             conn.commit()
             self.load_category_items()

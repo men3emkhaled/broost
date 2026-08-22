@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox
 )
 import database
+from core.order_finance import reconcile_order_finance
 from styles import STYLE_SHEET
 from datetime import datetime
 
@@ -412,7 +413,8 @@ class DriverSettlementDetailDialog(QDialog):
         self.driver_unsettled_cash = row_cash[0] if row_cash else 0.0
 
         c.execute("""
-            SELECT o.id, o.total, o.payment_method, COALESCE(cust.name, 'عميل'), COALESCE(cust.address, '')
+            SELECT o.id, o.total, o.payment_method, COALESCE(cust.name, 'عميل'),
+                   COALESCE(cust.address, '')
             FROM orders o
             LEFT JOIN customers cust ON o.customer_id = cust.id
             WHERE o.driver_id=? AND o.status='DISPATCHED'
@@ -483,8 +485,11 @@ class DriverSettlementDetailDialog(QDialog):
         conn = database.get_connection()
         c = conn.cursor()
         
-        total_cash_collected = 0.0
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        c.execute("SELECT id FROM shifts WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
+        shift_row = c.fetchone()
+        active_shift_id = shift_row[0] if shift_row else None
         
         if self.orders:
             for o_id, total, pay_method, _, _ in self.orders:
@@ -496,8 +501,6 @@ class DriverSettlementDetailDialog(QDialog):
                         "WHERE id=?",
                         (now_str, o_id),
                     )
-                    if pay_method == "CASH":
-                        total_cash_collected += total
                 else:
                     c.execute(
                         "UPDATE orders SET status='PENDING', driver_id=NULL, closed_at=NULL, "
@@ -505,19 +508,19 @@ class DriverSettlementDetailDialog(QDialog):
                         "WHERE id=?",
                         (o_id,),
                     )
+                reconcile_order_finance(
+                    conn, o_id, fallback_shift_id=active_shift_id
+                )
         else:
-            total_cash_collected = self.driver_unsettled_cash
-
-        # Reset driver unsettled cash to 0
-        c.execute("UPDATE drivers SET unsettled_cash = 0.0 WHERE id=?", (self.driver_id,))
-
-        # Update active shift expected cash
-        if total_cash_collected != 0.0:
-            c.execute("SELECT id FROM shifts WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1")
-            shift_row = c.fetchone()
-            if shift_row:
-                active_shift_id = shift_row[0]
-                c.execute("UPDATE shifts SET expected_cash = MAX(0.0, expected_cash + ?) WHERE id=?", (total_cash_collected, active_shift_id))
+            # A legacy balance with no matching open order is settled explicitly.
+            if self.driver_unsettled_cash and active_shift_id:
+                c.execute(
+                    "UPDATE shifts SET expected_cash=MAX(0.0, expected_cash+?) WHERE id=?",
+                    (self.driver_unsettled_cash, active_shift_id),
+                )
+                c.execute(
+                    "UPDATE drivers SET unsettled_cash=0 WHERE id=?", (self.driver_id,)
+                )
 
         conn.commit()
         conn.close()

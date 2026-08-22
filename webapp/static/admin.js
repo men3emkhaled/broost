@@ -41,6 +41,17 @@ async function adminApi(url, options = {}) {
   return data;
 }
 
+async function loadAllOrderPages(baseUrl) {
+  const pageSize = 500;
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const separator = baseUrl.includes("?") ? "&" : "?";
+    const page = await adminApi(`${baseUrl}${separator}limit=${pageSize}&offset=${offset}`);
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
+
 async function login() {
   const password = $("#adminPassword").value;
   $("#loginError").textContent = "";
@@ -83,8 +94,9 @@ async function loadOrders(force = false) {
   }
   adminState.ordersLoading = (async () => {
     const query = filterQuery();
-    const dashboardRequest = adminApi("/api/admin/orders");
-    const filteredRequest = query ? adminApi(`/api/admin/orders?${query}`) : dashboardRequest;
+    const businessStart = defaultBusinessDayStart().toISOString();
+    const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`);
+    const filteredRequest = query ? loadAllOrderPages(`/api/admin/orders?${query}`) : dashboardRequest;
     const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);
     [adminState.dashboardOrders, adminState.orders, adminState.businessDay] = await Promise.all([
       dashboardRequest,
@@ -583,6 +595,7 @@ async function loadSettings() {
   $("#mapUrlAdmin").value = adminState.settings.map_url || "";
   $("#facebookUrlAdmin").value = adminState.settings.facebook_url || "";
   $("#orderingEnabled").checked = adminState.settings.ordering_enabled;
+  $("#trustedCustomersOnly").checked = adminState.settings.trusted_customers_only;
 }
 
 async function saveSettings() {
@@ -591,6 +604,7 @@ async function saveSettings() {
       restaurant_name: $("#restaurantName").value.trim(),
       wallet_number: $("#walletNumberAdmin").value.trim(),
       ordering_enabled: $("#orderingEnabled").checked,
+      trusted_customers_only: $("#trustedCustomersOnly").checked,
       business_hours: $("#businessHoursAdmin").value.trim(),
       branch_address: $("#branchAddressAdmin").value.trim(),
       contact_phone: $("#contactPhoneAdmin").value.trim(),
@@ -601,6 +615,24 @@ async function saveSettings() {
     $("#settingsMessage").textContent = "تم حفظ الإعدادات.";
     await loadSettings();
   } catch (error) { $("#settingsMessage").textContent = error.message; }
+}
+
+async function downloadBackup() {
+  const response = await fetch(apiUrl("/api/admin/backup"), {
+    headers: { "X-Admin-Key": adminState.key },
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || "تعذر تجهيز النسخة");
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="?([^";]+)"?/)?.[1] || "broost-web-backup.json";
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 $$('[data-admin-view]').forEach((button) => button.addEventListener("click", () => {
@@ -629,6 +661,7 @@ $("#saveReviewBtn").addEventListener("click", saveReview);
 $("#saveIssueBtn").addEventListener("click", saveIssue);
 $("#menuCategoryFilter").addEventListener("change", renderMenuItems);
 $("#saveSettingsBtn").addEventListener("click", saveSettings);
+$("#downloadBackupBtn").addEventListener("click", () => downloadBackup().catch((error) => { $("#settingsMessage").textContent = error.message; }));
 
 document.addEventListener("click", async (event) => {
   const close = event.target.closest("[data-close-overlay]");

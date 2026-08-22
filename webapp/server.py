@@ -14,6 +14,9 @@ import secrets
 import sqlite3
 import sys
 import uuid
+import time
+import threading
+from collections import defaultdict, deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
@@ -84,7 +87,7 @@ WALLET_PAYMENT_TRANSITIONS = {
 
 
 def utc_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_utc_datetime(value: str | None) -> datetime | None:
@@ -141,6 +144,13 @@ def db_connection(*, immediate: bool = False):
         raise
     finally:
         conn.close()
+
+
+def select_for_update(conn, sql: str, params: tuple[Any, ...]):
+    """Lock a mutable order row on PostgreSQL; SQLite uses BEGIN IMMEDIATE."""
+    if USING_POSTGRES:
+        sql = f"{sql.rstrip()} FOR UPDATE"
+    return conn.execute(sql, params).fetchone()
 
 
 def init_web_db() -> None:
@@ -432,6 +442,7 @@ def init_web_db() -> None:
             "restaurant_name": "بروست",
             "wallet_number": "",
             "ordering_enabled": "1",
+            "trusted_customers_only": "0",
             "business_hours": "",
             "branch_address": "",
             "contact_phone": "",
@@ -539,6 +550,10 @@ def cashier_is_online(conn: sqlite3.Connection) -> bool:
 
 def ordering_is_available(conn: sqlite3.Connection) -> bool:
     return setting(conn, "ordering_enabled", "1") == "1" and cashier_is_online(conn)
+
+
+def trusted_customers_only(conn: sqlite3.Connection) -> bool:
+    return setting(conn, "trusted_customers_only", "0") == "1"
 
 
 def adjust_loyalty_account(
@@ -850,6 +865,7 @@ class SettingsInput(BaseModel):
     restaurant_name: str = Field(min_length=1, max_length=120)
     wallet_number: str = Field(default="", max_length=60)
     ordering_enabled: bool
+    trusted_customers_only: bool = False
     business_hours: str = Field(default="", max_length=240)
     branch_address: str = Field(default="", max_length=500)
     contact_phone: str = Field(default="", max_length=60)
@@ -1336,16 +1352,62 @@ def validate_production_config() -> None:
 validate_production_config()
 init_web_db()
 app = FastAPI(title="بروست Ordering API", version="1.0.0")
-cors_value = os.getenv("CORS_ORIGINS", "*").strip()
+cors_default = "https://broost-three.vercel.app" if APP_ENV == "production" else "*"
+cors_value = os.getenv("CORS_ORIGINS", cors_default).strip()
 cors_origins = [item.strip() for item in cors_value.split(",") if item.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=(
+        os.getenv("CORS_ORIGIN_REGEX", r"^https://broost(?:-[a-z0-9-]+)?\.vercel\.app$")
+        if APP_ENV == "production" else None
+    ),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Admin-Key", "X-Sync-Key"],
 )
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+
+_RATE_BUCKETS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+_RATE_LOCK = threading.Lock()
+_RATE_RULES = {
+    ("POST", "/api/admin/login"): (8, 300),
+    ("POST", "/api/orders"): (30, 600),
+    ("POST", "/api/loyalty/reward-codes"): (12, 600),
+}
+
+
+@app.middleware("http")
+async def safety_headers_and_rate_limits(request: Request, call_next):
+    rule = _RATE_RULES.get((request.method.upper(), request.url.path))
+    if rule:
+        limit, window_seconds = rule
+        client_ip = request.client.host if request.client else "unknown"
+        key = (client_ip, f"{request.method}:{request.url.path}")
+        now = time.monotonic()
+        with _RATE_LOCK:
+            bucket = _RATE_BUCKETS[key]
+            while bucket and bucket[0] <= now - window_seconds:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "محاولات كثيرة في وقت قصير. انتظر قليلًا ثم حاول مرة أخرى."},
+                    headers={"Retry-After": str(window_seconds)},
+                )
+            bucket.append(now)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    if APP_ENV == "production":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.get("/", include_in_schema=False)
@@ -1417,6 +1479,8 @@ def store_snapshot() -> dict[str, Any]:
             "restaurant_name": setting(conn, "restaurant_name", "بروست"),
             "wallet_available": bool(setting(conn, "wallet_number", "").strip()),
             "ordering_enabled": ordering_is_available(conn),
+            "manual_ordering_enabled": setting(conn, "ordering_enabled", "1") == "1",
+            "trusted_customers_only": trusted_customers_only(conn),
             "cashier_online": cashier_online,
             "business_hours": setting(conn, "business_hours", ""),
             "branch_address": setting(conn, "branch_address", ""),
@@ -1460,6 +1524,18 @@ def public_loyalty(phone: str = Query(min_length=7, max_length=30)) -> dict[str,
             "detailed_address": strip_area_prefix(
                 address["detailed_address"], address["area_name"]
             ) if address else "",
+        }
+        reliability = customer_reliability(conn, normalized)
+        result["reliability"] = {
+            "status": reliability["status"],
+            "label": reliability["label"],
+            "ordering_eligible": (
+                not reliability["is_blocked"]
+                and (
+                    not trusted_customers_only(conn)
+                    or reliability["status"] == "RELIABLE"
+                )
+            ),
         }
         return result
 
@@ -1547,6 +1623,15 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
             raise HTTPException(
                 status_code=403,
                 detail="لا يمكن إنشاء طلب بهذا الرقم. تواصل مع المطعم للمراجعة.",
+            )
+        reliability = customer_reliability(conn, customer_phone_normalized)
+        if trusted_customers_only(conn) and reliability["status"] != "RELIABLE":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "استقبال الطلبات متاح حاليًا للعملاء الموثوقين فقط. "
+                    "ابعت رقمك للمطعم على واتساب للتأكيد ثم حاول مرة أخرى."
+                ),
             )
 
         area_id = None
@@ -1794,7 +1879,9 @@ def get_public_order(resume_token: str) -> dict[str, Any]:
 def cancel_public_order(resume_token: str) -> dict[str, Any]:
     """Let the customer cancel safely until the order leaves for delivery."""
     with db_connection(immediate=True) as conn:
-        row = conn.execute("SELECT * FROM orders WHERE resume_token=?", (resume_token,)).fetchone()
+        row = select_for_update(
+            conn, "SELECT * FROM orders WHERE resume_token=?", (resume_token,)
+        )
         if not row:
             raise HTTPException(status_code=404, detail="الطلب غير موجود")
         if row["status"] == "CANCELLED":
@@ -1806,11 +1893,13 @@ def cancel_public_order(resume_token: str) -> dict[str, Any]:
             )
 
         now = utc_now()
-        conn.execute(
+        updated_count = conn.execute(
             "UPDATE orders SET status='CANCELLED', cancelled_by='CUSTOMER', "
-            "closed_at=?, updated_at=? WHERE id=?",
-            (now, now, row["id"]),
+            "closed_at=?, updated_at=? WHERE id=? AND status=?",
+            (now, now, row["id"], row["status"]),
         )
+        if updated_count.rowcount != 1:
+            raise HTTPException(status_code=409, detail="حالة الطلب اتغيرت؛ حدث الصفحة وحاول مرة أخرى")
         reconcile_order_loyalty(conn, row["id"])
         emit_event(
             conn,
@@ -1901,7 +1990,9 @@ def upload_payment_proof(resume_token: str, payload: ProofInput) -> dict[str, An
     }[payload.mime_type]
 
     with db_connection(immediate=True) as conn:
-        row = conn.execute("SELECT * FROM orders WHERE resume_token=?", (resume_token,)).fetchone()
+        row = select_for_update(
+            conn, "SELECT * FROM orders WHERE resume_token=?", (resume_token,)
+        )
         if not row:
             raise HTTPException(status_code=404, detail="الطلب غير موجود")
         if row["payment_method"] != "WALLET":
@@ -1924,19 +2015,22 @@ def upload_payment_proof(resume_token: str, payload: ProofInput) -> dict[str, An
         proof_url, proof_storage_id = store_payment_proof(raw, filename)
 
         now = utc_now()
-        conn.execute(
+        proof_update = conn.execute(
             """
             UPDATE orders
             SET proof_filename=?, proof_original_name=?, proof_mime_type=?,
                 proof_url=?, proof_storage_id=?, transfer_phone_suffix=?,
                 payment_status='PROOF_UPLOADED', updated_at=?
-            WHERE id=?
+            WHERE id=? AND payment_status=? AND status='NEW'
             """,
             (
                 filename, Path(payload.filename).name, payload.mime_type,
                 proof_url, proof_storage_id, transfer_suffix, now, row["id"],
+                row["payment_status"],
             ),
         )
+        if proof_update.rowcount != 1:
+            raise HTTPException(status_code=409, detail="حالة الطلب اتغيرت قبل رفع الصورة")
         emit_event(conn, row["id"], "PAYMENT_PROOF_UPLOADED", {"sha256": digest})
         updated = conn.execute("SELECT * FROM orders WHERE id=?", (row["id"],)).fetchone()
         return public_order_to_dict(conn, updated)
@@ -1960,6 +2054,7 @@ def get_admin_settings() -> dict[str, Any]:
             "restaurant_name": setting(conn, "restaurant_name", "بروست"),
             "wallet_number": setting(conn, "wallet_number", ""),
             "ordering_enabled": setting(conn, "ordering_enabled", "1") == "1",
+            "trusted_customers_only": trusted_customers_only(conn),
             "business_hours": setting(conn, "business_hours", ""),
             "branch_address": setting(conn, "branch_address", ""),
             "contact_phone": setting(conn, "contact_phone", ""),
@@ -1975,6 +2070,11 @@ def update_admin_settings(payload: SettingsInput) -> dict[str, bool]:
         set_setting(conn, "restaurant_name", payload.restaurant_name.strip())
         set_setting(conn, "wallet_number", payload.wallet_number.strip())
         set_setting(conn, "ordering_enabled", "1" if payload.ordering_enabled else "0")
+        set_setting(
+            conn,
+            "trusted_customers_only",
+            "1" if payload.trusted_customers_only else "0",
+        )
         set_setting(conn, "business_hours", payload.business_hours.strip())
         set_setting(conn, "branch_address", payload.branch_address.strip())
         set_setting(conn, "contact_phone", payload.contact_phone.strip())
@@ -1982,6 +2082,36 @@ def update_admin_settings(payload: SettingsInput) -> dict[str, bool]:
         set_setting(conn, "map_url", payload.map_url.strip())
         set_setting(conn, "facebook_url", payload.facebook_url.strip())
     return {"ok": True}
+
+
+@app.get("/api/admin/backup", dependencies=[Depends(require_admin)])
+def download_admin_backup() -> JSONResponse:
+    """Portable data export without deployment credentials."""
+    tables = (
+        "delivery_areas", "categories", "menu_items", "menu_item_sizes",
+        "menu_item_extras", "offers", "offer_items", "orders", "order_items",
+        "order_events", "customer_issues", "customer_controls", "reviews",
+        "loyalty_accounts", "reward_codes", "loyalty_transactions",
+    )
+    with db_connection() as conn:
+        payload = {
+            "format": "broost-web-backup-v1",
+            "created_at": utc_now(),
+            "settings": {
+                row["key"]: row["value"] for row in conn.execute(
+                    "SELECT key, value FROM settings WHERE key NOT IN ('admin_password', 'sync_key')"
+                ).fetchall()
+            },
+            "tables": {
+                table: [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
+                for table in tables
+            },
+        }
+    filename = f"broost-web-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    return JSONResponse(
+        payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/admin/reviews", dependencies=[Depends(require_admin)])
@@ -2323,6 +2453,8 @@ def admin_orders(
     date_to: str | None = None,
     source: str | None = None,
     status: str | None = None,
+    limit: int = Query(default=500, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -2345,7 +2477,8 @@ def admin_orders(
     with db_connection(immediate=True) as conn:
         expire_unaccepted_orders(conn)
         rows = conn.execute(
-            f"SELECT * FROM orders {where} ORDER BY created_at DESC LIMIT 1000", params
+            f"SELECT * FROM orders {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ).fetchall()
         return admin_orders_to_dict(conn, rows)
 
@@ -2394,24 +2527,43 @@ def customer_list_data(
     for row in control_rows:
         phone_rows.setdefault(row["phone_normalized"], row["updated_at"])
 
-    result: list[dict[str, Any]] = []
     ordered_phones = sorted(
         phone_rows.items(), key=lambda entry: entry[1] or "", reverse=True
     )[:limit]
-    for phone, _last_activity in ordered_phones:
-        latest = conn.execute(
-            "SELECT customer_name, customer_phone FROM orders "
-            "WHERE customer_phone_normalized=? ORDER BY created_at DESC LIMIT 1",
-            (phone,),
-        ).fetchone()
-        summary = customer_reliability(conn, phone)
-        points = loyalty_profile(conn, phone)
+    phone_values = [phone for phone, _ in ordered_phones]
+    if not phone_values:
+        return []
+    placeholders = ",".join("?" for _ in phone_values)
+    identity_rows = conn.execute(
+        f"SELECT customer_phone_normalized, customer_name, customer_phone FROM ("
+        f"SELECT customer_phone_normalized, customer_name, customer_phone, "
+        f"ROW_NUMBER() OVER (PARTITION BY customer_phone_normalized "
+        f"ORDER BY created_at DESC, id DESC) AS rn FROM orders "
+        f"WHERE customer_phone_normalized IN ({placeholders})) ranked WHERE rn=1",
+        phone_values,
+    ).fetchall()
+    identities = {row["customer_phone_normalized"]: row for row in identity_rows}
+    summaries = customer_reliability_batch(conn, phone_values)
+    points_rows = conn.execute(
+        f"SELECT phone_normalized, points_balance FROM loyalty_accounts "
+        f"WHERE phone_normalized IN ({placeholders})",
+        phone_values,
+    ).fetchall()
+    points_by_phone = {
+        row["phone_normalized"]: int(row["points_balance"] or 0) for row in points_rows
+    }
+
+    result: list[dict[str, Any]] = []
+    for phone in phone_values:
+        latest = identities.get(phone)
+        summary = summaries.get(phone) or customer_reliability(conn, phone)
+        points = points_by_phone.get(phone, 0)
         result.append({
             "customer_name": latest["customer_name"] if latest else "عميل",
             "customer_phone": latest["customer_phone"] if latest else phone,
             "phone_normalized": phone,
-            "loyalty_points": points["points"],
-            "reward_available": points["reward_available"],
+            "loyalty_points": points,
+            "reward_available": points >= LOYALTY_REWARD_POINTS,
             **summary,
         })
     return result
@@ -2606,7 +2758,7 @@ def update_admin_order(order_id: int, payload: OrderAdminUpdate) -> dict[str, An
         changes["status"] = "PREPARING"
     with db_connection(immediate=True) as conn:
         expire_unaccepted_orders(conn)
-        existing = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+        existing = select_for_update(conn, "SELECT * FROM orders WHERE id=?", (order_id,))
         if not existing:
             raise HTTPException(status_code=404, detail="الطلب غير موجود")
 
@@ -2705,6 +2857,23 @@ def sync_get_menu() -> dict[str, Any]:
 @app.post("/api/sync/menu", dependencies=[Depends(require_sync)])
 def sync_post_menu(payload: SyncMenuInput) -> dict[str, Any]:
     now = utc_now()
+    required_ids = {
+        "categories": (payload.categories, ("sync_id",)),
+        "items": (payload.items, ("sync_id", "category_sync_id")),
+        "sizes": (payload.sizes, ("sync_id", "item_sync_id")),
+        "extras": (payload.extras, ("sync_id", "item_sync_id")),
+        "offers": (payload.offers, ("sync_id",)),
+        "offer_items": (payload.offer_items, ("sync_id", "offer_sync_id", "item_sync_id")),
+    }
+    for collection_name, (records, fields) in required_ids.items():
+        for index, record in enumerate(records):
+            for field in fields:
+                value = str(record.get(field) or "").strip()
+                if not value or len(value) > 160:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"معرّف مزامنة غير صالح في {collection_name}[{index}].{field}",
+                    )
     with db_connection() as conn:
         server_version = int(setting(conn, "menu_version", "0"))
         has_server_menu = conn.execute("SELECT 1 FROM categories LIMIT 1").fetchone() is not None
@@ -2875,9 +3044,9 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
         for order in payload.orders:
             remote_id = order.get("remote_id")
             if remote_id:
-                existing = conn.execute(
-                    "SELECT * FROM orders WHERE id=?", (remote_id,)
-                ).fetchone()
+                existing = select_for_update(
+                    conn, "SELECT * FROM orders WHERE id=?", (remote_id,)
+                )
                 local_order_id = order.get("local_order_id")
                 expected_public_number = str(order.get("public_number") or "").strip()
                 valid_mapping = bool(

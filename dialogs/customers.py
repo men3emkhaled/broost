@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 import database
 from core import config
+from core.order_finance import cancel_and_reconcile
 from styles import STYLE_SHEET
 
 
@@ -417,39 +418,9 @@ class CustomersAdminDialog(QDialog):
                 ).fetchall() if local_id else []
             order_ids = [int(row[0]) for row in rows]
             for order_id in order_ids:
-                order = conn.execute(
-                    "SELECT payment_method, total, status, shift_id, driver_id, "
-                    "COALESCE(delivery_fee, 0.0), channel, COALESCE(source, 'POS') "
-                    "FROM orders WHERE id=?",
-                    (order_id,),
-                ).fetchone()
-                if order:
-                    payment_method, total, status, shift_id, driver_id, delivery_fee, channel, local_source = order
-                    total = float(total or 0)
-                    delivery_fee = float(delivery_fee or 0)
-                    if driver_id and status == "DISPATCHED":
-                        driver_owes = (
-                            total - delivery_fee
-                            if payment_method == "CASH"
-                            else -delivery_fee
-                        )
-                        conn.execute(
-                            "UPDATE drivers SET unsettled_cash=unsettled_cash-? WHERE id=?",
-                            (driver_owes, driver_id),
-                        )
-                    if payment_method == "CASH" and total > 0:
-                        should_deduct = (
-                            status == "COMPLETED"
-                            or (channel != "DELIVERY" and local_source != "ONLINE")
-                        )
-                        if should_deduct:
-                            target_shift = shift_id or config.ACTIVE_SHIFT_ID
-                            if target_shift:
-                                conn.execute(
-                                    "UPDATE shifts SET expected_cash=MAX(0.0, expected_cash-?) "
-                                    "WHERE id=?",
-                                    (total - delivery_fee, target_shift),
-                                )
+                cancel_and_reconcile(
+                    conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
+                )
                 conn.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
                 conn.execute("DELETE FROM orders WHERE id=?", (order_id,))
             conn.commit()

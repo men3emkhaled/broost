@@ -23,6 +23,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 import database
 from core import config
 from core.time_utils import to_local_db_timestamp
+from core.order_finance import reconcile_order_finance
 
 
 SYNC_REQUEST_TIMEOUT_SECONDS = 12
@@ -114,6 +115,9 @@ class OnlineSyncManager(QObject):
     order_updated = pyqtSignal(dict)
     menu_applied = pyqtSignal()
     sync_error = pyqtSignal(str)
+    queued_action_completed = pyqtSignal(str, dict)
+    queued_action_failed = pyqtSignal(str, dict, str)
+    queue_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +153,132 @@ class OnlineSyncManager(QObject):
         self._set_connected(True, "متزامن أونلاين")
         return result
 
+    @staticmethod
+    def is_queueable_error(exc: BaseException) -> bool:
+        """Only queue transient connectivity/server failures, never bad actions."""
+        current: BaseException | None = exc
+        seen: list[BaseException] = []
+        while current is not None and current not in seen:
+            seen.append(current)
+            if isinstance(current, urllib.error.HTTPError):
+                return current.code in (408, 425, 429, 500, 502, 503, 504)
+            if isinstance(current, (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError)):
+                return True
+            reason = getattr(current, "reason", None)
+            current = reason if isinstance(reason, BaseException) else current.__cause__
+        text = str(exc)
+        return any(marker in text for marker in (
+            "تعذر الوصول", "مهلة الاتصال", "DNS", "شهادة HTTPS",
+            "Proxy", "تم رفض اتصال", "خطأ داخلي (HTTP 5",
+        ))
+
+    def queue_remote_action(
+        self,
+        action_type: str,
+        remote_id: int,
+        changes: dict[str, Any],
+        context: dict[str, Any],
+    ) -> int:
+        action_key = f"order:{int(remote_id)}"
+        safe_context = {
+            key: value for key, value in context.items()
+            if isinstance(value, (str, int, float, bool, type(None)))
+        }
+        conn = database.get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO pending_remote_actions "
+                "(action_key, action_type, remote_id, changes_json, context_json) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(action_key) DO UPDATE SET "
+                "action_type=excluded.action_type, changes_json=excluded.changes_json, "
+                "context_json=excluded.context_json, created_at=CURRENT_TIMESTAMP, "
+                "attempts=0, last_error=''",
+                (
+                    action_key, action_type, int(remote_id),
+                    json.dumps(changes, ensure_ascii=False),
+                    json.dumps(safe_context, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+            count = int(conn.execute(
+                "SELECT COUNT(*) FROM pending_remote_actions"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.queue_changed.emit(count)
+        return count
+
+    def pending_remote_action_count(self) -> int:
+        conn = database.get_connection()
+        try:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM pending_remote_actions"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def _flush_pending_remote_actions(self) -> int:
+        conn = database.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT action_key, action_type, remote_id, changes_json, context_json "
+                "FROM pending_remote_actions ORDER BY created_at LIMIT 20"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for action_key, action_type, remote_id, changes_json, context_json in rows:
+            try:
+                changes = json.loads(changes_json or "{}")
+                context = json.loads(context_json or "{}")
+                self._request_json(
+                    f"/api/sync/orders/{int(remote_id)}",
+                    method="PATCH",
+                    payload=changes,
+                )
+            except Exception as exc:
+                if not self.is_queueable_error(exc):
+                    conn = database.get_connection()
+                    try:
+                        conn.execute(
+                            "DELETE FROM pending_remote_actions WHERE action_key=?",
+                            (action_key,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    self.queued_action_failed.emit(
+                        str(action_type), dict(context), str(exc)
+                    )
+                    continue
+                conn = database.get_connection()
+                try:
+                    conn.execute(
+                        "UPDATE pending_remote_actions SET attempts=attempts+1, last_error=? "
+                        "WHERE action_key=?",
+                        (str(exc)[:500], action_key),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                break
+
+            conn = database.get_connection()
+            try:
+                conn.execute(
+                    "DELETE FROM pending_remote_actions WHERE action_key=?",
+                    (action_key,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self.queued_action_completed.emit(str(action_type), dict(context))
+
+        remaining = self.pending_remote_action_count()
+        self.queue_changed.emit(remaining)
+        return remaining
+
     def search_remote_customers(self, query: str = "") -> list[dict[str, Any]]:
         encoded = urllib.parse.quote((query or "").strip())
         return self._request_json(f"/api/sync/customers?query={encoded}")
@@ -177,6 +307,7 @@ class OnlineSyncManager(QObject):
                 self._set_connected(False, "مزامنة الموقع متوقفة")
                 return
             self._last_nonfatal_sync_error = ""
+            pending_actions = self._flush_pending_remote_actions()
             self._sync_menu()
             self._pull_events()
             if time.monotonic() - self._last_orders_push >= 20:
@@ -203,6 +334,8 @@ class OnlineSyncManager(QObject):
             message = "متزامن أونلاين"
             if self._last_nonfatal_sync_error:
                 message = "متصل ويستقبل الطلبات — إعادة محاولة رفع السجل تلقائيًا"
+            elif pending_actions:
+                message = f"متصل — {pending_actions} عملية تنتظر المزامنة"
             elif self._consecutive_failures:
                 message = "عاد الاتصال وتمت المزامنة تلقائيًا"
             self._consecutive_failures = 0
@@ -797,11 +930,16 @@ class OnlineSyncManager(QObject):
             local_status = self._local_status(order.get("status", "NEW"))
             cash_paid = float(order.get("total", 0)) if payment_method != "CASH" else 0.0
             reliability = order.get("customer_reliability") or {}
+            active_shift_id = config.ACTIVE_SHIFT_ID
+            if active_shift_id and not cursor.execute(
+                "SELECT 1 FROM shifts WHERE id=?", (active_shift_id,)
+            ).fetchone():
+                active_shift_id = None
             values = (
                 customer_id, channel, payment_method, float(order.get("subtotal", 0)),
                 float(order.get("delivery_fee", 0)), float(order.get("discount", 0)),
                 float(order.get("total", 0)), cash_paid, 0.0, local_status,
-                config.ACTIVE_SHIFT_ID, order.get("notes") or "",
+                active_shift_id, order.get("notes") or "",
                 self._local_timestamp(order.get("created_at")), self._local_timestamp(order.get("closed_at")),
                 "ONLINE", int(order["id"]), order.get("public_number"), order.get("status"),
                 order.get("payment_status"), order.get("area_name") or "",
@@ -864,6 +1002,9 @@ class OnlineSyncManager(QObject):
                         json.dumps(extras_dict, ensure_ascii=False),
                     ),
                 )
+            reconcile_order_finance(
+                conn, local_order_id, fallback_shift_id=active_shift_id
+            )
             conn.commit()
             order["local_order_id"] = local_order_id
             return was_new
@@ -877,10 +1018,12 @@ class OnlineSyncManager(QObject):
             if initial:
                 rows = conn.execute(
                     """
-                    SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
+                    SELECT o.*, q.queued_at AS sync_queue_token,
+                           c.name AS customer_name, c.phone AS customer_phone,
                            c.address AS customer_address, d.name AS driver_name,
                            s.cashier_name AS cashier_name
                     FROM orders o
+                    LEFT JOIN pos_order_sync_queue q ON q.local_order_id=o.id
                     LEFT JOIN customers c ON c.id=o.customer_id
                     LEFT JOIN drivers d ON d.id=o.driver_id
                     LEFT JOIN shifts s ON s.id=o.shift_id
@@ -888,20 +1031,19 @@ class OnlineSyncManager(QObject):
                     """
                 ).fetchall()
             else:
-                cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
                 rows = conn.execute(
                     """
-                    SELECT o.*, c.name AS customer_name, c.phone AS customer_phone,
+                    SELECT o.*, q.queued_at AS sync_queue_token,
+                           c.name AS customer_name, c.phone AS customer_phone,
                            c.address AS customer_address, d.name AS driver_name,
                            s.cashier_name AS cashier_name
                     FROM orders o
+                    JOIN pos_order_sync_queue q ON q.local_order_id=o.id
                     LEFT JOIN customers c ON c.id=o.customer_id
                     LEFT JOIN drivers d ON d.id=o.driver_id
                     LEFT JOIN shifts s ON s.id=o.shift_id
-                    WHERE o.status IN ('PENDING', 'DISPATCHED') OR o.closed_at>=?
                     ORDER BY o.id
-                    """,
-                    (cutoff,),
+                    """
                 ).fetchall()
 
             result: list[dict[str, Any]] = []
@@ -956,6 +1098,7 @@ class OnlineSyncManager(QObject):
                         "extras": extras,
                     })
                 result.append({
+                    "_sync_queue_token": row["sync_queue_token"],
                     "remote_id": row["remote_id"],
                     "local_order_id": row["id"],
                     "public_number": row["public_number"] or "",
@@ -1002,11 +1145,15 @@ class OnlineSyncManager(QObject):
         if not batches and deleted_local_order_ids:
             batches = [[]]
         for batch_index, batch in enumerate(batches):
+            wire_batch = [
+                {key: value for key, value in order.items() if key != "_sync_queue_token"}
+                for order in batch
+            ]
             result = self._request_json(
                 "/api/sync/pos-orders",
                 method="POST",
                 payload={
-                    "orders": batch,
+                    "orders": wire_batch,
                     "deleted_local_order_ids": (
                         deleted_local_order_ids if batch_index == 0 else []
                     ),
@@ -1017,7 +1164,7 @@ class OnlineSyncManager(QObject):
                 result.get("deleted_local_order_ids", [])
                 if isinstance(result, dict) else []
             )
-            if mappings or acknowledged_deletions:
+            if mappings or acknowledged_deletions or batch:
                 conn = database.get_connection()
                 try:
                     for local_order_id, remote_id in mappings.items():
@@ -1035,6 +1182,14 @@ class OnlineSyncManager(QObject):
                             "DELETE FROM pos_order_deletions WHERE local_order_id=?",
                             (int(local_order_id),),
                         )
+                    for sent_order in batch:
+                        queue_token = sent_order.get("_sync_queue_token")
+                        if queue_token:
+                            conn.execute(
+                                "DELETE FROM pos_order_sync_queue "
+                                "WHERE local_order_id=? AND queued_at=?",
+                                (int(sent_order["local_order_id"]), queue_token),
+                            )
                     conn.commit()
                 finally:
                     conn.close()

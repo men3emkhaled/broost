@@ -20,9 +20,9 @@ class ReportPerformanceTests(unittest.TestCase):
         self.assertIn("start", attributes)
         self.assertNotIn("load_analytics", attributes)
 
-    def test_history_table_has_a_safe_render_limit(self):
+    def test_history_table_does_not_silently_truncate_selected_period(self):
         source = (ROOT / "dialogs" / "reports.py").read_text(encoding="utf-8")
-        self.assertGreaterEqual(source.count("ORDER BY o.id DESC LIMIT 300"), 4)
+        self.assertEqual(source.count("ORDER BY o.id DESC LIMIT 300"), 0)
 
     def test_local_reporting_indexes_are_created(self):
         source = (ROOT / "database.py").read_text(encoding="utf-8")

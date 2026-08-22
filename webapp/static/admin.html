@@ -125,8 +125,9 @@
               <div class="field"><label for="mapUrlAdmin">رابط الخريطة</label><input class="input" id="mapUrlAdmin" dir="ltr" placeholder="https://..."></div>
               <div class="field"><label for="facebookUrlAdmin">رابط فيسبوك</label><input class="input" id="facebookUrlAdmin" dir="ltr" placeholder="https://..."></div>
               <label class="option-row field-full"><span><strong>استقبال طلبات جديدة</strong><small class="muted">إيقافه يمنع إنشاء طلبات جديدة على الموقع.</small></span><input type="checkbox" id="orderingEnabled"></label>
+              <label class="option-row field-full"><span><strong>الطلبات للعملاء الموثوقين فقط</strong><small class="muted">العميل الجديد سيشاهد زر واتساب لإرسال رقمه للمطعم، وبعد جعله موثوقًا يقدر يطلب.</small></span><input type="checkbox" id="trustedCustomersOnly"></label>
             </div>
-            <button class="btn btn-primary" id="saveSettingsBtn">حفظ الإعدادات</button>
+            <div class="inline-actions"><button class="btn btn-primary" id="saveSettingsBtn">حفظ الإعدادات</button><button class="btn" id="downloadBackupBtn">تحميل نسخة بيانات الموقع</button></div>
             <p class="error-text" id="settingsMessage"></p>
           </section>
         </section>
@@ -251,6 +252,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/admin.js?v=20260817-1" defer></script>
+  <script src="/assets/admin.js?v=20260822-1" defer></script>
 </body>
 </html>

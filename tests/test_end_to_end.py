@@ -179,6 +179,53 @@ class BroostEndToEndTest(unittest.TestCase):
         self.assertFalse(wrong_key["sync_ok"])
         self.assertIn("مفتاح المزامنة", wrong_key["message"])
 
+    def test_trusted_only_mode_blocks_new_customer_until_cashier_approves_phone(self):
+        web_db = self.temp_path / "web" / "broost_web.db"
+        phone = "01598765432"
+        store = self.request("/api/store")
+        item = store["menu"]["items"][0]
+        payload = {
+            "client_request_id": "trusted-only-test-1",
+            "fulfillment": "PICKUP",
+            "payment_method": "CASH",
+            "customer_name": "عميل جديد",
+            "customer_phone": phone,
+            "area_id": None,
+            "detailed_address": "",
+            "notes": "",
+            "redeem_reward": False,
+            "items": [{"item_id": item["sync_id"], "quantity": 1, "size_id": None, "extra_ids": [], "spicy": False}],
+        }
+        conn = sqlite3.connect(web_db, timeout=20)
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('trusted_customers_only', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value='1'"
+        )
+        conn.commit()
+        conn.close()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as blocked:
+                self.request("/api/orders", "POST", payload)
+            self.assertEqual(blocked.exception.code, 403)
+
+            conn = sqlite3.connect(web_db, timeout=20)
+            conn.execute(
+                "INSERT INTO customer_controls(phone_normalized, force_trusted, is_blocked, updated_at) "
+                "VALUES (?, 1, 0, CURRENT_TIMESTAMP) ON CONFLICT(phone_normalized) DO UPDATE SET force_trusted=1",
+                (phone,),
+            )
+            conn.commit()
+            conn.close()
+            payload["client_request_id"] = "trusted-only-test-2"
+            created = self.request("/api/orders", "POST", payload)
+            self.assertEqual(created["status"], "NEW")
+        finally:
+            conn = sqlite3.connect(web_db, timeout=20)
+            conn.execute("UPDATE settings SET value='0' WHERE key='trusted_customers_only'")
+            conn.execute("DELETE FROM settings WHERE key='pos_last_seen_at'")
+            conn.commit()
+            conn.close()
+
         # Testing a key must not make the public website think the cashier is open.
         conn = sqlite3.connect(web_db, timeout=20)
         last_seen = conn.execute(

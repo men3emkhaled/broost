@@ -38,6 +38,15 @@ if exist "BroostPOS.exe"      del /q "BroostPOS.exe"
 if exist "CashierSystem_Setup.exe" del /q "CashierSystem_Setup.exe"
 echo       Done.
 
+rem Generate POS-only hosted connection defaults without bundling the deployment .env
+echo [2.5/7] Preparing POS connection defaults...
+python scripts\prepare_pos_release.py --output build\pos_defaults.json
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to prepare POS connection defaults.
+    pause
+    exit /b 1
+)
+
 rem Step 3: Build using spec file
 echo [3/7] Compiling Cashier System...
 python -m PyInstaller --noconfirm BroostPOS.spec
@@ -86,6 +95,13 @@ if not exist "dist\BroostPOS\broost_pos.db" (
     )
 ) else (
     echo       [SKIP] broost_pos.db already exists.
+)
+
+python scripts\prepare_pos_release.py --output build\pos_defaults.json --database dist\BroostPOS\broost_pos.db
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to prepare the installation database.
+    pause
+    exit /b 1
 )
 
 rem QR Code
