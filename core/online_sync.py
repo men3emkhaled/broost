@@ -29,6 +29,7 @@ from core.order_finance import reconcile_order_finance
 SYNC_REQUEST_TIMEOUT_SECONDS = 12
 SYNC_REQUEST_ATTEMPTS = 2
 SYNC_RETRY_DELAY_SECONDS = 0.65
+POS_SYNC_BATCH_SIZE = 20
 MAX_SYNC_LOG_BYTES = 2 * 1024 * 1024
 _SSL_CONTEXT: ssl.SSLContext | None = None
 _SYNC_LOG_LOCK = threading.Lock()
@@ -1141,7 +1142,13 @@ class OnlineSyncManager(QObject):
         finally:
             conn.close()
 
-        batches = [orders[start:start + 200] for start in range(0, len(orders), 200)]
+        # PostgreSQL is across the internet from the cashier. Small batches
+        # keep every transaction comfortably below the request timeout and
+        # prevent a first-time history upload from monopolising the backend.
+        batches = [
+            orders[start:start + POS_SYNC_BATCH_SIZE]
+            for start in range(0, len(orders), POS_SYNC_BATCH_SIZE)
+        ]
         if not batches and deleted_local_order_ids:
             batches = [[]]
         for batch_index, batch in enumerate(batches):

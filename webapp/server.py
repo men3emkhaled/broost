@@ -140,7 +140,12 @@ def db_connection(*, immediate: bool = False):
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            # A severed PostgreSQL connection cannot be rolled back. Preserve
+            # the original error and let the pool discard that connection.
+            pass
         raise
     finally:
         conn.close()
@@ -1370,6 +1375,10 @@ app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
 _RATE_BUCKETS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 _RATE_LOCK = threading.Lock()
+# A legacy/newly installed cashier may upload a large initial history. Never
+# let overlapping retries hold every PostgreSQL connection while waiting for
+# the same order rows.
+_POS_SYNC_LOCK = threading.Lock()
 _RATE_RULES = {
     ("POST", "/api/admin/login"): (8, 300),
     ("POST", "/api/orders"): (30, 600),
@@ -3017,12 +3026,39 @@ def sync_get_order_proof(order_id: int) -> Response:
 
 @app.post("/api/sync/pos-orders", dependencies=[Depends(require_sync)])
 def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
+    if not _POS_SYNC_LOCK.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="مزامنة سجل الكاشير جارية بالفعل؛ ستتم إعادة المحاولة تلقائيًا.",
+        )
+    try:
+        return _sync_pos_orders_locked(payload)
+    finally:
+        _POS_SYNC_LOCK.release()
+
+
+def _sync_pos_orders_locked(payload: PosOrdersInput) -> dict[str, Any]:
     synced = 0
     ignored = 0
     repaired = 0
     mappings: dict[str, int] = {}
     deleted_local_order_ids: list[int] = []
     with db_connection(immediate=True) as conn:
+        if USING_POSTGRES:
+            # The advisory lock also serialises requests during a rolling
+            # deployment where old and new Railway containers briefly overlap.
+            acquired = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(2026082601) AS acquired"
+            ).fetchone()
+            if not acquired or not acquired["acquired"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="مزامنة سجل الكاشير جارية بالفعل؛ ستتم إعادة المحاولة تلقائيًا.",
+                )
+            # A dead/legacy request must fail and roll back instead of filling
+            # the pool with transactions waiting indefinitely for one row.
+            conn.execute("SET LOCAL lock_timeout = '4s'")
+            conn.execute("SET LOCAL statement_timeout = '30s'")
         for local_order_id in dict.fromkeys(payload.deleted_local_order_ids):
             existing_pos = conn.execute(
                 "SELECT id, status FROM orders WHERE source='POS' AND local_order_id=?",
