@@ -47,6 +47,7 @@ async function loadAllOrderPages(baseUrl) {
   for (let offset = 0; ; offset += pageSize) {
     const separator = baseUrl.includes("?") ? "&" : "?";
     const page = await adminApi(`${baseUrl}${separator}limit=${pageSize}&offset=${offset}`);
+    if (!Array.isArray(page)) return rows;
     rows.push(...page);
     if (page.length < pageSize) return rows;
   }
@@ -171,28 +172,40 @@ async function loadOrders(force = false) {
     try { await adminState.ordersLoading; } catch { /* retry below */ }
   }
   adminState.ordersLoading = (async () => {
-    const query = filterQuery();
-    const startObj = defaultBusinessDayStart();
-    const businessStart = startObj.toISOString();
-    const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`);
-    const filteredRequest = query ? loadAllOrderPages(`/api/admin/orders?${query}`) : dashboardRequest;
-    const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);
-    [adminState.dashboardOrders, adminState.orders, adminState.businessDay] = await Promise.all([
-      dashboardRequest,
-      filteredRequest,
-      businessDayRequest,
-    ]);
-    
-    if (knownOrderIds !== null) {
-      const currentIds = new Set(adminState.orders.map((o) => o.id));
-      const hasNewOrder = adminState.orders.some((o) => !knownOrderIds.has(o.id));
-      if (hasNewOrder) playNotificationChime();
-      knownOrderIds = currentIds;
-    } else {
-      knownOrderIds = new Set(adminState.orders.map((o) => o.id));
+    try {
+      const query = filterQuery();
+      const startObj = defaultBusinessDayStart();
+      const businessStart = startObj.toISOString();
+      const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`).catch(() => []);
+      const filteredRequest = query ? loadAllOrderPages(`/api/admin/orders?${query}`).catch(() => []) : dashboardRequest;
+      const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);
+      
+      const [dashOrders, filteredOrders, bDay] = await Promise.all([
+        dashboardRequest,
+        filteredRequest,
+        businessDayRequest,
+      ]);
+      
+      adminState.dashboardOrders = Array.isArray(dashOrders) ? dashOrders : [];
+      adminState.orders = Array.isArray(filteredOrders) ? filteredOrders : [];
+      adminState.businessDay = bDay;
+      
+      if (knownOrderIds !== null) {
+        const currentIds = new Set(adminState.orders.map((o) => o.id));
+        const hasNewOrder = adminState.orders.some((o) => !knownOrderIds.has(o.id));
+        if (hasNewOrder) playNotificationChime();
+        knownOrderIds = currentIds;
+      } else {
+        knownOrderIds = new Set(adminState.orders.map((o) => o.id));
+      }
+      
+      renderOrders();
+    } catch (err) {
+      console.error("loadOrders error:", err);
+      if ($("#adminTodayLabel")) {
+        $("#adminTodayLabel").textContent = "تعذر تحميل البيانات - اضغط تحديث البيانات للبدء";
+      }
     }
-    
-    renderOrders();
   })();
   try {
     return await adminState.ordersLoading;
