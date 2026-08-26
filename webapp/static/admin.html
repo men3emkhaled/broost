@@ -55,8 +55,13 @@
               <div class="delivery-fee-note"><span>رسوم توصيل محصلة للطيارين</span><strong id="todayDeliveryFees">0 ج</strong><small>غير داخلة في صافي مبيعات المطعم</small></div>
             </section>
             <section class="card insight-card top-item-card">
-              <div class="insight-head"><div><span>الأكثر طلبًا اليوم</span><h3>الصنف المتصدر</h3></div><span class="top-item-mark">1</span></div>
-              <div class="top-item-summary"><strong id="todayTopItem">لا توجد مبيعات مسجلة بعد</strong><span id="todayTopItemDetails">—</span></div>
+              <div class="insight-head">
+                <div><span>مبيعات أصناف اليوم</span><h3>الأصناف المطلوبة اليوم</h3></div>
+                <span class="badge badge-brand" id="todayItemsCountBadge" style="font-weight:700">0 صنف</span>
+              </div>
+              <div class="items-sold-breakdown" id="todayAllItemsList">
+                <div class="empty-state compact-empty">لا توجد مبيعات مسجلة اليوم بعد.</div>
+              </div>
               <div class="operation-strip"><span><b id="todayCancelled">0</b> ملغي اليوم</span><span><b id="todayNewCustomers">0</b> عميل برقم موبايل</span></div>
             </section>
           </div>
@@ -64,8 +69,8 @@
           <div class="section-head order-workspace-head"><div><span class="admin-eyebrow">التشغيل المباشر</span><h2>كل الطلبات</h2><p>تابع طلبات المطعم والموقع وغيّر حالتها من مكان واحد.</p></div><span class="result-count" id="filteredOrdersCount">0 طلب</span></div>
 
           <div class="filter-bar">
-            <input class="input" type="date" id="ordersFrom" aria-label="من تاريخ">
-            <input class="input" type="date" id="ordersTo" aria-label="إلى تاريخ">
+            <select class="input" id="ordersDaySelect" aria-label="اختر اليوم" style="min-width:210px; font-weight:700;"></select>
+            <input class="input" type="date" id="ordersCustomDate" aria-label="تاريخ مخصص" hidden>
             <select class="input" id="ordersSource" aria-label="مصدر الطلب"><option value="">كل المصادر</option><option value="ONLINE">أونلاين</option><option value="POS">داخل المطعم</option></select>
             <button class="btn btn-primary" id="applyOrderFilters">عرض</button>
           </div>

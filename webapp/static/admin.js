@@ -79,11 +79,68 @@ async function loadAll() {
   }
 }
 
+function populateDaySelect() {
+  const select = $("#ordersDaySelect");
+  if (!select) return;
+  const days = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+  const now = new Date();
+  const options = [];
+
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const dayName = days[d.getDay()];
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    const formattedDate = `${dd}/${mm}/${yyyy}`;
+    
+    let label = "";
+    if (i === 0) label = `اليوم — ${dayName} ${formattedDate}`;
+    else if (i === 1) label = `أمس — ${dayName} ${formattedDate}`;
+    else label = `${dayName} ${formattedDate}`;
+    
+    options.push({ value: dateStr, label });
+  }
+
+  options.push({ value: "ALL", label: "كل الأيام" });
+  options.push({ value: "CUSTOM", label: "تاريخ مخصص..." });
+
+  select.innerHTML = options.map((opt) => `<option value="${opt.value}">${opt.label}</option>`).join("");
+}
+
 function filterQuery() {
+  const daySelect = $("#ordersDaySelect");
+  const customDateInput = $("#ordersCustomDate");
+  const source = $("#ordersSource")?.value || "";
+  
+  let dateFrom = "";
+  let dateTo = "";
+  
+  if (daySelect) {
+    const val = daySelect.value;
+    if (val === "CUSTOM") {
+      if (customDateInput && customDateInput.value) {
+        dateFrom = customDateInput.value;
+        dateTo = customDateInput.value;
+      }
+    } else if (val === "ALL") {
+      dateFrom = "";
+      dateTo = "";
+    } else if (val) {
+      dateFrom = val;
+      dateTo = val;
+    }
+  } else {
+    dateFrom = $("#ordersFrom")?.value || "";
+    dateTo = $("#ordersTo")?.value || "";
+  }
+  
   const params = new URLSearchParams();
-  if ($("#ordersFrom").value) params.set("date_from", $("#ordersFrom").value);
-  if ($("#ordersTo").value) params.set("date_to", $("#ordersTo").value);
-  if ($("#ordersSource").value) params.set("source", $("#ordersSource").value);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  if (source) params.set("source", source);
   return params.toString();
 }
 
@@ -203,7 +260,25 @@ function renderDailyOverview() {
     current.sales += Number(item.unit_price || 0) * quantity;
     itemStats.set(name, current);
   }));
-  const topItem = [...itemStats.entries()].sort((a, b) => b[1].quantity - a[1].quantity || b[1].sales - a[1].sales)[0];
+  const sortedItems = [...itemStats.entries()].sort((a, b) => b[1].quantity - a[1].quantity || b[1].sales - a[1].sales);
+  const itemsBadge = $("#todayItemsCountBadge");
+  if (itemsBadge) itemsBadge.textContent = `${sortedItems.length} صنف`;
+  const itemsList = $("#todayAllItemsList");
+  if (itemsList) {
+    if (sortedItems.length > 0) {
+      itemsList.innerHTML = sortedItems.map(([itemName, stat]) => `
+        <div class="item-sold-row">
+          <span class="item-sold-name"><strong>${escapeHtml(itemName)}</strong></span>
+          <span class="item-sold-qty">
+            <span class="badge badge-brand">${stat.quantity} قطعة</span>
+            <small>${money(stat.sales)}</small>
+          </span>
+        </div>
+      `).join("");
+    } else {
+      itemsList.innerHTML = `<div class="empty-state compact-empty">لا توجد مبيعات مسجلة اليوم بعد.</div>`;
+    }
+  }
 
   const startTime = businessStart.toLocaleTimeString("ar-EG", { hour: "numeric", minute: "2-digit" });
   const periodSource = adminState.businessDay?.business_day_start ? "حسب يوم عمل الكاشير" : "يبدأ افتراضيًا ٨ صباحًا";
@@ -223,8 +298,6 @@ function renderDailyOverview() {
   $("#todayDeliveryFees").textContent = money(deliveryFees);
   $("#todayCancelled").textContent = cancelledToday.length;
   $("#todayNewCustomers").textContent = phones.size;
-  $("#todayTopItem").textContent = topItem ? topItem[0] : "لا توجد مبيعات مسجلة بعد";
-  $("#todayTopItemDetails").textContent = topItem ? `${topItem[1].quantity} قطعة · ${money(topItem[1].sales)}` : "—";
 }
 
 function renderOrders() {
@@ -675,6 +748,14 @@ $$('[data-admin-view]').forEach((button) => button.addEventListener("click", () 
 $("#loginBtn").addEventListener("click", login);
 $("#adminPassword").addEventListener("keydown", (event) => { if (event.key === "Enter") login(); });
 $("#logoutBtn").addEventListener("click", () => { sessionStorage.removeItem("broost_admin_key"); location.reload(); });
+populateDaySelect();
+$("#ordersDaySelect")?.addEventListener("change", (e) => {
+  const customInput = $("#ordersCustomDate");
+  if (customInput) customInput.hidden = (e.target.value !== "CUSTOM");
+  loadOrders(true);
+});
+$("#ordersCustomDate")?.addEventListener("change", () => loadOrders(true));
+$("#ordersSource")?.addEventListener("change", () => loadOrders(true));
 $("#refreshOrdersBtn").addEventListener("click", () => loadOrders(true));
 $("#applyOrderFilters").addEventListener("click", () => loadOrders(true));
 $("#customerSearchBtn").addEventListener("click", loadCustomers);

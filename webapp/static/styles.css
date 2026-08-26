@@ -1457,6 +1457,59 @@ th { color: var(--muted); background: #fafafa; font-size: 13px; }
   .admin-page .filter-bar .btn { flex: 1 1 130px; width: auto; }
 }
 
+/* Admin items sold breakdown list */
+.items-sold-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-inline-end: 4px;
+  margin-block: 10px 12px;
+}
+.items-sold-breakdown::-webkit-scrollbar {
+  width: 4px;
+}
+.items-sold-breakdown::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+.item-sold-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 11px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 9px;
+  font-size: 13px;
+}
+.item-sold-name {
+  color: #202124;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.item-sold-qty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.item-sold-qty .badge {
+  padding: 3px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.item-sold-qty small {
+  color: #5f6368;
+  font-weight: 700;
+  font-size: 11px;
+}
+
 /* Premium customer order tracking */
 .customer-site[data-view="tracking"] {
   background:
