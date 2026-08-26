@@ -143,7 +143,7 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
 
     try:
         import psycopg
-        from psycopg_pool import ConnectionPool
+        from psycopg_pool import ConnectionPool, PoolTimeout
         from psycopg.rows import dict_row
     except ImportError as exc:  # pragma: no cover - production dependency
         raise RuntimeError(
@@ -161,14 +161,31 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
                         min_size=1,
                         max_size=int(os.getenv("DB_POOL_MAX_SIZE", "5")),
                         timeout=float(os.getenv("DB_POOL_TIMEOUT", "10")),
+                        # Neon/PgBouncer may close an otherwise idle TCP
+                        # connection.  Validate every checkout so a sleeping
+                        # database or a changed network never leaves the POS
+                        # talking to a permanently stale pool connection.
+                        check=ConnectionPool.check_connection,
+                        max_idle=float(os.getenv("DB_POOL_MAX_IDLE", "60")),
+                        max_lifetime=float(os.getenv("DB_POOL_MAX_LIFETIME", "300")),
+                        reconnect_timeout=float(
+                            os.getenv("DB_POOL_RECONNECT_TIMEOUT", "30")
+                        ),
+                        open=True,
                         kwargs={
                             "row_factory": dict_row,
                             "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+                            "keepalives": 1,
+                            "keepalives_idle": 30,
+                            "keepalives_interval": 10,
+                            "keepalives_count": 3,
                         },
                     )
-        connection = _POSTGRES_POOL.getconn()
+        connection = _POSTGRES_POOL.getconn(
+            timeout=float(os.getenv("DB_POOL_TIMEOUT", "10"))
+        )
         return PostgresConnection(connection, psycopg, _POSTGRES_POOL)
-    except psycopg.Error as exc:  # pragma: no cover - requires live PostgreSQL
+    except (psycopg.Error, PoolTimeout) as exc:  # pragma: no cover - live PostgreSQL
         raise DatabaseError(str(exc)) from exc
 
 
