@@ -544,7 +544,7 @@ class OnlineSyncManager(QObject):
             except urllib.error.HTTPError as exc:
                 if exc.code in (500, 502, 503, 504) and attempt + 1 < request_attempts:
                     log_network_error("sync-json-retry", request.full_url, exc)
-                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS * (1.5 ** attempt))
                     continue
                 raw = exc.read().decode("utf-8", errors="replace")
                 try:
@@ -561,7 +561,7 @@ class OnlineSyncManager(QObject):
             except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
                 log_network_error("sync-json", request.full_url, exc)
                 if attempt + 1 < request_attempts:
-                    time.sleep(SYNC_RETRY_DELAY_SECONDS)
+                    time.sleep(SYNC_RETRY_DELAY_SECONDS * (1.5 ** attempt))
                     continue
                 raise RuntimeError(network_error_message(exc)) from exc
         raise RuntimeError("تعذر إكمال طلب المزامنة")

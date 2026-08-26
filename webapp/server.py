@@ -1419,11 +1419,16 @@ _RATE_RULES = {
 
 @app.middleware("http")
 async def safety_headers_and_rate_limits(request: Request, call_next):
-    rule = _RATE_RULES.get((request.method.upper(), request.url.path))
+    method = request.method.upper()
+    path = request.url.path
+    rule = _RATE_RULES.get((method, path))
+    if not rule and method == "POST" and path.endswith("/proof"):
+        rule = (10, 300)
+
     if rule:
         limit, window_seconds = rule
         client_ip = request.client.host if request.client else "unknown"
-        key = (client_ip, f"{request.method}:{request.url.path}")
+        key = (client_ip, f"{method}:{path}")
         now = time.monotonic()
         with _RATE_LOCK:
             bucket = _RATE_BUCKETS[key]
@@ -1479,9 +1484,22 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/store")
-def store_snapshot() -> dict[str, Any]:
+def store_snapshot(request: Request) -> Response:
     with db_connection(immediate=True) as conn:
         expire_unaccepted_orders(conn)
+        menu_version = setting(conn, "menu_version", "0")
+        menu_updated = setting(conn, "menu_updated_at", "")
+        cashier_online = cashier_is_online(conn)
+        ordering_enabled = ordering_is_available(conn)
+        
+        etag = f'W/"v{menu_version}-{cashier_online}-{ordering_enabled}-{hashlib.md5(menu_updated.encode()).hexdigest()[:8]}"'
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match and if_none_match.strip('"') == etag.strip('"'):
+            return Response(
+                status_code=304,
+                headers={"ETag": etag, "Cache-Control": "public, max-age=3"},
+            )
+
         areas = [dict(row) for row in conn.execute(
             "SELECT id, name, delivery_fee, delivery_enabled, sort_order FROM delivery_areas "
             "WHERE is_active=1 ORDER BY sort_order, name"
@@ -1515,11 +1533,11 @@ def store_snapshot() -> dict[str, Any]:
             "SELECT id, customer_name, review_text, rating FROM reviews "
             "WHERE is_visible=1 ORDER BY sort_order, id DESC"
         ).fetchall()]
-        cashier_online = cashier_is_online(conn)
-        return {
+        
+        payload = {
             "restaurant_name": setting(conn, "restaurant_name", "بروست"),
             "wallet_available": bool(setting(conn, "wallet_number", "").strip()),
-            "ordering_enabled": ordering_is_available(conn),
+            "ordering_enabled": ordering_enabled,
             "manual_ordering_enabled": setting(conn, "ordering_enabled", "1") == "1",
             "trusted_customers_only": trusted_customers_only(conn),
             "cashier_online": cashier_online,
@@ -1533,6 +1551,10 @@ def store_snapshot() -> dict[str, Any]:
             "reviews": reviews,
             "menu": menu,
         }
+        res = JSONResponse(payload)
+        res.headers["ETag"] = etag
+        res.headers["Cache-Control"] = "public, max-age=3"
+        return res
 
 
 @app.get("/api/loyalty")

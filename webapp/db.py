@@ -181,10 +181,20 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
                             "keepalives_count": 3,
                         },
                     )
-        connection = _POSTGRES_POOL.getconn(
-            timeout=float(os.getenv("DB_POOL_TIMEOUT", "10"))
-        )
-        return PostgresConnection(connection, psycopg, _POSTGRES_POOL)
+        last_exc: Exception | None = None
+        for _attempt in range(2):
+            try:
+                connection = _POSTGRES_POOL.getconn(
+                    timeout=float(os.getenv("DB_POOL_TIMEOUT", "10"))
+                )
+                return PostgresConnection(connection, psycopg, _POSTGRES_POOL)
+            except (psycopg.Error, PoolTimeout) as exc:  # pragma: no cover - live PostgreSQL
+                last_exc = exc
+                try:
+                    _POSTGRES_POOL.check()
+                except Exception:
+                    pass
+        raise DatabaseError(str(last_exc)) from last_exc
     except (psycopg.Error, PoolTimeout) as exc:  # pragma: no cover - live PostgreSQL
         raise DatabaseError(str(exc)) from exc
 

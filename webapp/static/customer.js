@@ -975,10 +975,41 @@ async function uploadProof() {
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+    if (!file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1]);
+      reader.onerror = reject;
+      return reader.readAsDataURL(file);
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxDim = 1200;
+      let width = img.width;
+      let height = img.height;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+      resolve(dataUrl.split(",")[1]);
+    };
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+    img.src = url;
   });
 }
 
@@ -1183,12 +1214,14 @@ loadStore().then(async () => {
 });
 
 setInterval(async () => {
-  if (!state.order) return;
+  if (!state.order || document.hidden) return;
+  const status = state.order.status;
+  if (status === "COMPLETED" || status === "CANCELLED") return;
   try {
     state.order = await api(`/api/orders/${encodeURIComponent(state.order.resume_token)}`);
     renderOrder();
   } catch { /* keep the last known state */ }
-}, 10000);
+}, 5000);
 
 setInterval(() => {
   if (!document.hidden) loadStore();

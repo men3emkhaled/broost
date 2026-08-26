@@ -87,6 +87,27 @@ function filterQuery() {
   return params.toString();
 }
 
+let knownOrderIds = null;
+
+function playNotificationChime() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.45);
+  } catch { /* ignore audio permission blocks */ }
+}
+
 async function loadOrders(force = false) {
   if (adminState.ordersLoading && !force) return adminState.ordersLoading;
   if (adminState.ordersLoading && force) {
@@ -103,6 +124,16 @@ async function loadOrders(force = false) {
       filteredRequest,
       businessDayRequest,
     ]);
+    
+    if (knownOrderIds !== null) {
+      const currentIds = new Set(adminState.orders.map((o) => o.id));
+      const hasNewOrder = adminState.orders.some((o) => !knownOrderIds.has(o.id));
+      if (hasNewOrder) playNotificationChime();
+      knownOrderIds = currentIds;
+    } else {
+      knownOrderIds = new Set(adminState.orders.map((o) => o.id));
+    }
+    
     renderOrders();
   })();
   try {
