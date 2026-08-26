@@ -29,7 +29,8 @@ from core.order_finance import reconcile_order_finance
 SYNC_REQUEST_TIMEOUT_SECONDS = 12
 SYNC_REQUEST_ATTEMPTS = 2
 SYNC_RETRY_DELAY_SECONDS = 0.65
-POS_SYNC_BATCH_SIZE = 20
+POS_SYNC_BATCH_SIZE = 5
+POS_SYNC_REQUEST_TIMEOUT_SECONDS = 25
 MAX_SYNC_LOG_BYTES = 2 * 1024 * 1024
 _SSL_CONTEXT: ssl.SSLContext | None = None
 _SYNC_LOG_LOCK = threading.Lock()
@@ -311,6 +312,14 @@ class OnlineSyncManager(QObject):
             pending_actions = self._flush_pending_remote_actions()
             self._sync_menu()
             self._pull_events()
+            heartbeat_payload = self._cashier_day_context()
+            # Confirm the cashier is online before the optional history mirror.
+            # A slow first-time upload must never make the public site look shut.
+            self._request_json(
+                "/api/sync/heartbeat",
+                method="POST",
+                payload=heartbeat_payload,
+            )
             if time.monotonic() - self._last_orders_push >= 20:
                 try:
                     self._push_pos_orders()
@@ -327,10 +336,12 @@ class OnlineSyncManager(QObject):
                     # Retry on the normal interval instead of hammering a sick
                     # backend on every UI poll.
                     self._last_orders_push = time.monotonic()
+            # Refresh once more after the bounded POS batch so even the longest
+            # allowed request remains inside the website's online window.
             self._request_json(
                 "/api/sync/heartbeat",
                 method="POST",
-                payload=self._cashier_day_context(),
+                payload=heartbeat_payload,
             )
             message = "متزامن أونلاين"
             if self._last_nonfatal_sync_error:
@@ -507,6 +518,9 @@ class OnlineSyncManager(QObject):
         path: str,
         method: str = "GET",
         payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: int | None = None,
+        attempts: int | None = None,
     ) -> Any:
         base_url, sync_key = self._connection_values()
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -520,13 +534,15 @@ class OnlineSyncManager(QObject):
                 "X-Sync-Key": sync_key,
             },
         )
-        for attempt in range(SYNC_REQUEST_ATTEMPTS):
+        request_timeout = timeout_seconds or SYNC_REQUEST_TIMEOUT_SECONDS
+        request_attempts = attempts or SYNC_REQUEST_ATTEMPTS
+        for attempt in range(request_attempts):
             try:
-                with open_url(request, timeout=SYNC_REQUEST_TIMEOUT_SECONDS) as response:
+                with open_url(request, timeout=request_timeout) as response:
                     raw = response.read()
                     return json.loads(raw.decode("utf-8")) if raw else {}
             except urllib.error.HTTPError as exc:
-                if exc.code in (500, 502, 503, 504) and attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                if exc.code in (500, 502, 503, 504) and attempt + 1 < request_attempts:
                     log_network_error("sync-json-retry", request.full_url, exc)
                     time.sleep(SYNC_RETRY_DELAY_SECONDS)
                     continue
@@ -544,7 +560,7 @@ class OnlineSyncManager(QObject):
                 raise RuntimeError(message) from exc
             except (urllib.error.URLError, OSError, TimeoutError, ssl.SSLError) as exc:
                 log_network_error("sync-json", request.full_url, exc)
-                if attempt + 1 < SYNC_REQUEST_ATTEMPTS:
+                if attempt + 1 < request_attempts:
                     time.sleep(SYNC_RETRY_DELAY_SECONDS)
                     continue
                 raise RuntimeError(network_error_message(exc)) from exc
@@ -1012,7 +1028,9 @@ class OnlineSyncManager(QObject):
         finally:
             conn.close()
 
-    def _orders_for_sync(self, initial: bool) -> list[dict[str, Any]]:
+    def _orders_for_sync(
+        self, initial: bool, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         conn = database.get_connection()
         conn.row_factory = __import__("sqlite3").Row
         try:
@@ -1043,9 +1061,14 @@ class OnlineSyncManager(QObject):
                     LEFT JOIN customers c ON c.id=o.customer_id
                     LEFT JOIN drivers d ON d.id=o.driver_id
                     LEFT JOIN shifts s ON s.id=o.shift_id
-                    ORDER BY o.id
+                    ORDER BY q.queued_at DESC,
+                             CASE WHEN o.source='ONLINE' THEN 0 ELSE 1 END,
+                             o.id DESC
                     """
                 ).fetchall()
+
+            if limit is not None:
+                rows = rows[:max(0, int(limit))]
 
             result: list[dict[str, Any]] = []
             for row in rows:
@@ -1130,75 +1153,100 @@ class OnlineSyncManager(QObject):
 
     def _push_pos_orders(self) -> None:
         initial = self._setting("web_initial_orders_synced", "0") != "1"
-        orders = self._orders_for_sync(initial)
         conn = database.get_connection()
         try:
+            if initial:
+                seeded = conn.execute(
+                    "SELECT value FROM settings WHERE key='web_initial_orders_queued'"
+                ).fetchone()
+                if not seeded or seeded[0] != "1":
+                    # Turn the first history upload into the same durable queue
+                    # used by live edits. This lets us acknowledge a few rows
+                    # per heartbeat without restarting from order number one.
+                    conn.execute(
+                        "INSERT OR IGNORE INTO pos_order_sync_queue "
+                        "(local_order_id, queued_at) "
+                        "SELECT id, CURRENT_TIMESTAMP FROM orders"
+                    )
+                    conn.execute(
+                        "INSERT INTO settings (key, value) VALUES "
+                        "('web_initial_orders_queued', '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value='1'"
+                    )
+                    conn.commit()
             deleted_local_order_ids = [
                 int(row[0]) for row in conn.execute(
                     "SELECT local_order_id FROM pos_order_deletions "
-                    "ORDER BY deleted_at, local_order_id LIMIT 250"
+                    "ORDER BY deleted_at, local_order_id LIMIT ?",
+                    (POS_SYNC_BATCH_SIZE,),
                 ).fetchall()
             ]
         finally:
             conn.close()
 
-        # PostgreSQL is across the internet from the cashier. Small batches
-        # keep every transaction comfortably below the request timeout and
-        # prevent a first-time history upload from monopolising the backend.
-        batches = [
-            orders[start:start + POS_SYNC_BATCH_SIZE]
-            for start in range(0, len(orders), POS_SYNC_BATCH_SIZE)
-        ]
-        if not batches and deleted_local_order_ids:
-            batches = [[]]
-        for batch_index, batch in enumerate(batches):
+        remaining_slots = max(0, POS_SYNC_BATCH_SIZE - len(deleted_local_order_ids))
+        orders = self._orders_for_sync(False, limit=remaining_slots)
+        if orders or deleted_local_order_ids:
             wire_batch = [
                 {key: value for key, value in order.items() if key != "_sync_queue_token"}
-                for order in batch
+                for order in orders
             ]
+            # A POS history push is deliberately attempted once. If the reply
+            # is lost, the durable queue retries on a later poll; issuing a
+            # second overlapping HTTP request is what used to exhaust Neon.
             result = self._request_json(
                 "/api/sync/pos-orders",
                 method="POST",
                 payload={
                     "orders": wire_batch,
-                    "deleted_local_order_ids": (
-                        deleted_local_order_ids if batch_index == 0 else []
-                    ),
+                    "deleted_local_order_ids": deleted_local_order_ids,
                 },
+                timeout_seconds=POS_SYNC_REQUEST_TIMEOUT_SECONDS,
+                attempts=1,
             )
             mappings = result.get("mappings", {}) if isinstance(result, dict) else {}
             acknowledged_deletions = (
                 result.get("deleted_local_order_ids", [])
                 if isinstance(result, dict) else []
             )
-            if mappings or acknowledged_deletions or batch:
-                conn = database.get_connection()
-                try:
-                    for local_order_id, remote_id in mappings.items():
+            conn = database.get_connection()
+            try:
+                for local_order_id, remote_id in mappings.items():
+                    conn.execute(
+                        "UPDATE orders SET remote_id=NULL "
+                        "WHERE source='ONLINE' AND remote_id=? AND id!=?",
+                        (int(remote_id), int(local_order_id)),
+                    )
+                    conn.execute(
+                        "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE'",
+                        (int(remote_id), int(local_order_id)),
+                    )
+                for local_order_id in acknowledged_deletions:
+                    conn.execute(
+                        "DELETE FROM pos_order_deletions WHERE local_order_id=?",
+                        (int(local_order_id),),
+                    )
+                for sent_order in orders:
+                    queue_token = sent_order.get("_sync_queue_token")
+                    if queue_token:
                         conn.execute(
-                            "UPDATE orders SET remote_id=NULL "
-                            "WHERE source='ONLINE' AND remote_id=? AND id!=?",
-                            (int(remote_id), int(local_order_id)),
+                            "DELETE FROM pos_order_sync_queue "
+                            "WHERE local_order_id=? AND queued_at=?",
+                            (int(sent_order["local_order_id"]), queue_token),
                         )
-                        conn.execute(
-                            "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE'",
-                            (int(remote_id), int(local_order_id)),
-                        )
-                    for local_order_id in acknowledged_deletions:
-                        conn.execute(
-                            "DELETE FROM pos_order_deletions WHERE local_order_id=?",
-                            (int(local_order_id),),
-                        )
-                    for sent_order in batch:
-                        queue_token = sent_order.get("_sync_queue_token")
-                        if queue_token:
-                            conn.execute(
-                                "DELETE FROM pos_order_sync_queue "
-                                "WHERE local_order_id=? AND queued_at=?",
-                                (int(sent_order["local_order_id"]), queue_token),
-                            )
-                    conn.commit()
-                finally:
-                    conn.close()
+                conn.commit()
+            finally:
+                conn.close()
+
         if initial:
-            self._set_setting("web_initial_orders_synced", "1")
+            conn = database.get_connection()
+            try:
+                pending = int(conn.execute(
+                    "SELECT COUNT(*) FROM pos_order_sync_queue"
+                ).fetchone()[0]) + int(conn.execute(
+                    "SELECT COUNT(*) FROM pos_order_deletions"
+                ).fetchone()[0])
+            finally:
+                conn.close()
+            if pending == 0:
+                self._set_setting("web_initial_orders_synced", "1")

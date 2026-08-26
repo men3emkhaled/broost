@@ -7,7 +7,11 @@ from pathlib import Path
 
 import database
 from core import config
-from core.online_sync import OnlineSyncManager
+from core.online_sync import (
+    OnlineSyncManager,
+    POS_SYNC_BATCH_SIZE,
+    POS_SYNC_REQUEST_TIMEOUT_SECONDS,
+)
 from core.order_finance import cancel_and_reconcile, reconcile_order_finance
 from views.dashboard import MainPOSDashboard
 
@@ -132,6 +136,58 @@ class CashierExperienceTests(unittest.TestCase):
         conn.commit()
         conn.close()
         self.assertNotIn(order_id, [row["local_order_id"] for row in manager._orders_for_sync(False)])
+
+    def test_initial_history_sync_is_durable_bounded_and_non_overlapping(self):
+        conn = database.get_connection()
+        conn.executemany(
+            "INSERT INTO orders "
+            "(channel, payment_method, total, status, source, created_at) "
+            "VALUES ('CASHIER', 'CASH', ?, 'COMPLETED', 'POS', '2026-08-22 10:00:00')",
+            [(float(index),) for index in range(POS_SYNC_BATCH_SIZE * 2 + 3)],
+        )
+        conn.execute(
+            "UPDATE settings SET value='0' WHERE key='web_initial_orders_synced'"
+        )
+        conn.execute(
+            "UPDATE settings SET value='0' WHERE key='web_initial_orders_queued'"
+        )
+        conn.commit()
+        conn.close()
+
+        manager = OnlineSyncManager()
+        calls = []
+
+        def request(path, method="GET", payload=None, **options):
+            calls.append((path, method, payload, options))
+            return {
+                "mappings": {},
+                "deleted_local_order_ids": payload["deleted_local_order_ids"],
+            }
+
+        manager._request_json = request
+        manager._push_pos_orders()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "/api/sync/pos-orders")
+        self.assertLessEqual(len(calls[0][2]["orders"]), POS_SYNC_BATCH_SIZE)
+        self.assertEqual(calls[0][3]["attempts"], 1)
+        self.assertEqual(
+            calls[0][3]["timeout_seconds"], POS_SYNC_REQUEST_TIMEOUT_SECONDS
+        )
+        conn = database.get_connection()
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM pos_order_sync_queue"
+        ).fetchone()[0]
+        initial_done = conn.execute(
+            "SELECT value FROM settings WHERE key='web_initial_orders_synced'"
+        ).fetchone()[0]
+        initial_seeded = conn.execute(
+            "SELECT value FROM settings WHERE key='web_initial_orders_queued'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(remaining, POS_SYNC_BATCH_SIZE + 3)
+        self.assertEqual(initial_done, "0")
+        self.assertEqual(initial_seeded, "1")
 
     def test_business_day_boundary_never_moves_to_shift_close(self):
         from unittest.mock import patch

@@ -384,6 +384,7 @@ def init_db():
                      ("web_last_event_id", "0"),
                      ("web_menu_version", "0"),
                      ("web_menu_fingerprint", ""),
+                     ("web_initial_orders_queued", "0"),
                      ("web_initial_orders_synced", "0")]:
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
     

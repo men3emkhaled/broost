@@ -68,6 +68,8 @@ LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
 LOYALTY_REWARD_CODE_VALUE = Decimal("150")
 POS_HEARTBEAT_TIMEOUT_SECONDS = 30
 ORDER_ACCEPTANCE_TIMEOUT_MINUTES = 30
+APP_RELEASE = "2026-08-26-sync-v2"
+WEB_SCHEMA_VERSION = "2026-08-26-v2"
 
 ORDER_STATUS_TRANSITIONS = {
     "NEW": {"PREPARING", "CANCELLED"},
@@ -163,6 +165,29 @@ def init_web_db() -> None:
     if not USING_POSTGRES:
         PROOFS_DIR.mkdir(parents=True, exist_ok=True)
     with db_connection() as conn:
+        schema_is_current = False
+        if USING_POSTGRES:
+            tables = conn.execute(
+                "SELECT to_regclass('public.settings') AS settings_table, "
+                "to_regclass('public.orders') AS orders_table"
+            ).fetchone()
+            if tables and tables["settings_table"] and tables["orders_table"]:
+                version_row = conn.execute(
+                    "SELECT value FROM settings WHERE key='web_schema_version'"
+                ).fetchone()
+                schema_is_current = bool(
+                    version_row and version_row["value"] == WEB_SCHEMA_VERSION
+                )
+        if schema_is_current:
+            # Hosted startup should normally be read-light and lock-free. DDL,
+            # indexes and historical loyalty repair only run after an explicit
+            # schema-version bump, not on every Railway restart.
+            if os.getenv("BROOST_ADMIN_PASSWORD"):
+                set_setting(conn, "admin_password", os.environ["BROOST_ADMIN_PASSWORD"])
+            if os.getenv("BROOST_SYNC_KEY"):
+                set_setting(conn, "sync_key", os.environ["BROOST_SYNC_KEY"])
+            return
+
         schema_sql = """
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -486,6 +511,7 @@ def init_web_db() -> None:
         ).fetchall()
         for loyalty_order in loyalty_order_ids:
             reconcile_order_loyalty(conn, loyalty_order["id"])
+        set_setting(conn, "web_schema_version", WEB_SCHEMA_VERSION)
 
 
 def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
@@ -1360,6 +1386,11 @@ app = FastAPI(title="بروست Ordering API", version="1.0.0")
 cors_default = "https://broost-three.vercel.app" if APP_ENV == "production" else "*"
 cors_value = os.getenv("CORS_ORIGINS", cors_default).strip()
 cors_origins = [item.strip() for item in cors_value.split(",") if item.strip()] or ["*"]
+if APP_ENV == "production" and "*" in cors_origins:
+    # Keep an old permissive Railway variable from exposing the production API
+    # to arbitrary browser origins. Preview deployments remain covered by the
+    # explicit Broost Vercel regex below.
+    cors_origins = [cors_default]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -1443,6 +1474,7 @@ def health() -> dict[str, str]:
         "time": utc_now(),
         "database": "postgresql" if USING_POSTGRES else "sqlite",
         "proof_storage": "cloudinary" if CLOUDINARY_URL else "local",
+        "release": APP_RELEASE,
     }
 
 
@@ -3033,6 +3065,14 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
         )
     try:
         return _sync_pos_orders_locked(payload)
+    except DatabaseError as exc:
+        detail = str(exc).lower()
+        if any(marker in detail for marker in ("lock timeout", "statement timeout", "deadlock")):
+            raise HTTPException(
+                status_code=409,
+                detail="مزامنة سجل الكاشير مشغولة؛ ستتم إعادة المحاولة تلقائيًا.",
+            ) from exc
+        raise
     finally:
         _POS_SYNC_LOCK.release()
 
