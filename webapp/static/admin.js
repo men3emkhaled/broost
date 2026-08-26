@@ -115,7 +115,8 @@ async function loadOrders(force = false) {
   }
   adminState.ordersLoading = (async () => {
     const query = filterQuery();
-    const businessStart = defaultBusinessDayStart().toISOString();
+    const startObj = defaultBusinessDayStart();
+    const businessStart = startObj.toISOString();
     const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`);
     const filteredRequest = query ? loadAllOrderPages(`/api/admin/orders?${query}`) : dashboardRequest;
     const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);

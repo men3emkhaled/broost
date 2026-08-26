@@ -2522,14 +2522,29 @@ def admin_orders(
     clauses: list[str] = []
     params: list[Any] = []
     if date_from:
-        clauses.append("created_at >= ?")
-        params.append(date_from)
+        dt_from = parse_utc_datetime(date_from)
+        if dt_from:
+            clean_space = dt_from.strftime("%Y-%m-%d %H:%M:%S")
+            clean_iso = dt_from.strftime("%Y-%m-%dT%H:%M:%S")
+            clauses.append("(created_at >= ? OR replace(created_at, ' ', 'T') >= ?)")
+            params.extend((clean_space, clean_iso))
+        else:
+            clauses.append("(created_at >= ? OR replace(created_at, ' ', 'T') >= ?)")
+            params.extend((date_from, date_from))
     if date_to:
-        clauses.append("created_at < ?")
-        try:
-            params.append((datetime.fromisoformat(date_to) + timedelta(days=1)).date().isoformat())
-        except ValueError:
-            raise HTTPException(status_code=422, detail="تاريخ النهاية غير صحيح")
+        dt_to = parse_utc_datetime(date_to)
+        if dt_to:
+            next_day_space = (dt_to + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+            next_day_iso = (dt_to + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
+            params.extend((next_day_space, next_day_iso))
+        else:
+            try:
+                next_date = (datetime.fromisoformat(date_to) + timedelta(days=1)).date().isoformat()
+                clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
+                params.extend((next_date, next_date))
+            except ValueError:
+                raise HTTPException(status_code=422, detail="تاريخ النهاية غير صحيح")
     if source:
         clauses.append("source=?")
         params.append(source.upper())
