@@ -85,10 +85,11 @@ function populateDaySelect() {
   if (!select) return;
   const days = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
   const now = new Date();
+  const anchorDate = defaultBusinessDayStart(now);
   const options = [];
 
   for (let i = 0; i < 14; i++) {
-    const d = new Date(now);
+    const d = new Date(anchorDate);
     d.setDate(d.getDate() - i);
     const dayName = days[d.getDay()];
     const yyyy = d.getFullYear();
@@ -98,9 +99,9 @@ function populateDaySelect() {
     const formattedDate = `${dd}/${mm}/${yyyy}`;
     
     let label = "";
-    if (i === 0) label = `اليوم — ${dayName} ${formattedDate}`;
-    else if (i === 1) label = `أمس — ${dayName} ${formattedDate}`;
-    else label = `${dayName} ${formattedDate}`;
+    if (i === 0) label = `اليوم — ${dayName} ${formattedDate} (٨ ص - ٨ ص)`;
+    else if (i === 1) label = `أمس — ${dayName} ${formattedDate} (٨ ص - ٨ ص)`;
+    else label = `${dayName} ${formattedDate} (٨ ص - ٨ ص)`;
     
     options.push({ value: dateStr, label });
   }
@@ -235,7 +236,10 @@ function currentBusinessDayStart(now = new Date()) {
 
 function isInBusinessDay(value, start, now = new Date()) {
   const date = parsedLocalDate(value);
-  return Boolean(date) && date >= start && date <= now;
+  if (!date) return false;
+  const businessEnd = new Date(start);
+  businessEnd.setDate(businessEnd.getDate() + 1);
+  return date >= start && date < businessEnd;
 }
 
 function productNet(order) {

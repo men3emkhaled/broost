@@ -2522,7 +2522,10 @@ def admin_orders(
     clauses: list[str] = []
     params: list[Any] = []
     if date_from:
-        dt_from = parse_utc_datetime(date_from)
+        val_from = date_from.strip()
+        if len(val_from) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_from):
+            val_from = f"{val_from} 08:00:00"
+        dt_from = parse_utc_datetime(val_from)
         if dt_from:
             clean_space = dt_from.strftime("%Y-%m-%d %H:%M:%S")
             clean_iso = dt_from.strftime("%Y-%m-%dT%H:%M:%S")
@@ -2530,21 +2533,24 @@ def admin_orders(
             params.extend((clean_space, clean_iso))
         else:
             clauses.append("(created_at >= ? OR replace(created_at, ' ', 'T') >= ?)")
-            params.extend((date_from, date_from))
+            params.extend((val_from, val_from))
     if date_to:
-        dt_to = parse_utc_datetime(date_to)
-        if dt_to:
-            next_day_space = (dt_to + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
-            next_day_iso = (dt_to + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
-            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
-            params.extend((next_day_space, next_day_iso))
-        else:
+        val_to = date_to.strip()
+        if len(val_to) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_to):
             try:
-                next_date = (datetime.fromisoformat(date_to) + timedelta(days=1)).date().isoformat()
-                clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
-                params.extend((next_date, next_date))
+                base_date = datetime.strptime(val_to, "%Y-%m-%d").date()
+                val_to = (base_date + timedelta(days=1)).strftime("%Y-%m-%d 08:00:00")
             except ValueError:
-                raise HTTPException(status_code=422, detail="تاريخ النهاية غير صحيح")
+                pass
+        dt_to = parse_utc_datetime(val_to)
+        if dt_to:
+            next_space = dt_to.strftime("%Y-%m-%d %H:%M:%S")
+            next_iso = dt_to.strftime("%Y-%m-%dT%H:%M:%S")
+            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
+            params.extend((next_space, next_iso))
+        else:
+            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
+            params.extend((val_to, val_to))
     if source:
         clauses.append("source=?")
         params.append(source.upper())
