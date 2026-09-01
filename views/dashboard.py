@@ -2985,7 +2985,7 @@ class MainPOSDashboard(QMainWindow):
         conn.commit()
         conn.close()
         if hasattr(self, "online_sync"):
-            self.online_sync.poll()
+            self.online_sync.push_pos_orders_now()
         
         # 5. Generate Receipt contents
         cashier_receipt = self.generate_receipt_text(order_id, "نسخة الكاشير")
@@ -3881,7 +3881,7 @@ class MainPOSDashboard(QMainWindow):
             )
             conn.commit()
             if hasattr(self, "online_sync"):
-                self.online_sync.poll()
+                self.online_sync.push_pos_orders_now()
             return True
         finally:
             conn.close()
@@ -3951,7 +3951,7 @@ class MainPOSDashboard(QMainWindow):
             )
             conn.commit()
             if hasattr(self, "online_sync"):
-                self.online_sync.poll()
+                self.online_sync.push_pos_orders_now()
             return True
         finally:
             conn.close()

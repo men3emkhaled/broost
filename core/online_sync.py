@@ -137,6 +137,19 @@ class OnlineSyncManager(QObject):
             return
         threading.Thread(target=self._poll_worker, daemon=True, name="broost-web-sync").start()
 
+    def push_pos_orders_now(self) -> None:
+        """Instantly push local POS orders to the web server without waiting for poll locks."""
+        def worker():
+            try:
+                self._push_pos_orders()
+            except Exception as exc:
+                log_network_error(
+                    "pos-orders-push-now",
+                    f"{self._connection_values()[0]}/api/sync/pos-orders",
+                    exc,
+                )
+        threading.Thread(target=worker, daemon=True, name="broost-instant-pos-push").start()
+
     def push_remote_update(self, remote_id: int, **changes: Any) -> None:
         def worker():
             try:
@@ -320,22 +333,10 @@ class OnlineSyncManager(QObject):
                 return
             self._last_nonfatal_sync_error = ""
             pending_actions = self._flush_pending_remote_actions()
-            self._sync_menu()
-            self._pull_events()
-            heartbeat_payload = self._cashier_day_context()
-            # Confirm the cashier is online before the optional history mirror.
-            # A slow first-time upload must never make the public site look shut.
-            self._request_json(
-                "/api/sync/heartbeat",
-                method="POST",
-                payload=heartbeat_payload,
-            )
-            if time.monotonic() - self._last_orders_push >= 4 or self.has_pending_pos_orders():
+            if time.monotonic() - self._last_orders_push >= 2 or self.has_pending_pos_orders():
                 try:
                     self._push_pos_orders()
                 except Exception as exc:
-                    # POS history is a secondary mirror. Never let one stale/bad
-                    # historical row block incoming web orders or the heartbeat.
                     self._last_nonfatal_sync_error = str(exc)
                     log_network_error(
                         "pos-orders-push",
@@ -343,9 +344,15 @@ class OnlineSyncManager(QObject):
                         exc,
                     )
                 finally:
-                    # Retry on the normal interval instead of hammering a sick
-                    # backend on every UI poll.
                     self._last_orders_push = time.monotonic()
+            self._sync_menu()
+            self._pull_events()
+            heartbeat_payload = self._cashier_day_context()
+            self._request_json(
+                "/api/sync/heartbeat",
+                method="POST",
+                payload=heartbeat_payload,
+            )
             # Refresh once more after the bounded POS batch so even the longest
             # allowed request remains inside the website's online window.
             self._request_json(
