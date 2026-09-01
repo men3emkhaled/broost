@@ -1239,13 +1239,10 @@ class OnlineSyncManager(QObject):
                         (int(local_order_id),),
                     )
                 for sent_order in orders:
-                    queue_token = sent_order.get("_sync_queue_token")
-                    if queue_token:
-                        conn.execute(
-                            "DELETE FROM pos_order_sync_queue "
-                            "WHERE local_order_id=? AND queued_at=?",
-                            (int(sent_order["local_order_id"]), queue_token),
-                        )
+                    conn.execute(
+                        "DELETE FROM pos_order_sync_queue WHERE local_order_id=?",
+                        (int(sent_order["local_order_id"]),),
+                    )
                 conn.commit()
             finally:
                 conn.close()
