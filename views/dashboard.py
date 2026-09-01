@@ -2984,6 +2984,8 @@ class MainPOSDashboard(QMainWindow):
             
         conn.commit()
         conn.close()
+        if hasattr(self, "online_sync"):
+            self.online_sync.poll()
         
         # 5. Generate Receipt contents
         cashier_receipt = self.generate_receipt_text(order_id, "نسخة الكاشير")
@@ -3878,6 +3880,8 @@ class MainPOSDashboard(QMainWindow):
                 conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
             )
             conn.commit()
+            if hasattr(self, "online_sync"):
+                self.online_sync.poll()
             return True
         finally:
             conn.close()
@@ -3946,6 +3950,8 @@ class MainPOSDashboard(QMainWindow):
                 conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
             )
             conn.commit()
+            if hasattr(self, "online_sync"):
+                self.online_sync.poll()
             return True
         finally:
             conn.close()
@@ -4978,6 +4984,9 @@ class MainPOSDashboard(QMainWindow):
     def handle_online_order_received(self, order):
         # Several Railway events can arrive in one poll; rebuild the sidebar once.
         self._schedule_pending_orders_refresh()
+        status = str(order.get("status") or "").upper()
+        if status in ("COMPLETED", "CANCELLED"):
+            return
         self._record_notification(
             "طلب أونلاين جديد",
             f"وصل الطلب {order.get('public_number') or order.get('id') or ''} بقيمة "

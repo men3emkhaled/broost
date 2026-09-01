@@ -7,6 +7,7 @@ The desktop/local server keeps using SQLite.  Railway uses PostgreSQL whenever
 
 from __future__ import annotations
 
+import atexit
 import os
 import sqlite3
 from pathlib import Path
@@ -22,6 +23,21 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USING_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 _POSTGRES_POOL: Any = None
 _POOL_LOCK = threading.Lock()
+
+
+def close_database_pool() -> None:
+    """Close the global Postgres connection pool cleanly."""
+    global _POSTGRES_POOL
+    with _POOL_LOCK:
+        if _POSTGRES_POOL is not None:
+            try:
+                _POSTGRES_POOL.close()
+            except Exception:
+                pass
+            _POSTGRES_POOL = None
+
+
+atexit.register(close_database_pool)
 
 
 class DatabaseError(Exception):
@@ -87,10 +103,6 @@ class PostgresConnection:
             cursor = self._connection.cursor()
             translated_sql = _postgres_sql(sql)
             bound_params = tuple(params) if params is not None else ()
-            # Psycopg parses percent signs as client-side placeholders whenever
-            # a parameters argument is supplied, even when that argument is an
-            # empty tuple. Execute parameterless SQL without a second argument
-            # so literal LIKE patterns such as '%Z' remain valid PostgreSQL.
             if bound_params:
                 cursor.execute(translated_sql, bound_params)
             else:
@@ -110,8 +122,6 @@ class PostgresConnection:
             raise AssertionError("unreachable")
 
     def executescript(self, sql: str) -> None:
-        # The schema only contains simple CREATE statements; it has no function
-        # bodies or other blocks containing semicolons.
         for statement in (part.strip() for part in sql.split(";")):
             if statement:
                 self.execute(statement)
@@ -135,10 +145,11 @@ class PostgresConnection:
 def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnection:
     if not USING_POSTGRES:
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(sqlite_path, timeout=20)
+        connection = sqlite3.connect(sqlite_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
         return connection
 
     try:
@@ -161,10 +172,6 @@ def connect_database(sqlite_path: Path) -> sqlite3.Connection | PostgresConnecti
                         min_size=1,
                         max_size=int(os.getenv("DB_POOL_MAX_SIZE", "5")),
                         timeout=float(os.getenv("DB_POOL_TIMEOUT", "10")),
-                        # Neon/PgBouncer may close an otherwise idle TCP
-                        # connection.  Validate every checkout so a sleeping
-                        # database or a changed network never leaves the POS
-                        # talking to a permanently stale pool connection.
                         check=ConnectionPool.check_connection,
                         max_idle=float(os.getenv("DB_POOL_MAX_IDLE", "60")),
                         max_lifetime=float(os.getenv("DB_POOL_MAX_LIFETIME", "300")),

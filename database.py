@@ -19,8 +19,8 @@ BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 
 def get_connection():
     # WAL lets background website sync work without blocking normal cashier reads.
-    connection = sqlite3.connect(DB_PATH, timeout=2.0)
-    connection.execute("PRAGMA busy_timeout=2000")
+    connection = sqlite3.connect(DB_PATH, timeout=30.0)
+    connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
 

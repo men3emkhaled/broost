@@ -18,7 +18,7 @@ class DatabaseResponsivenessTests(unittest.TestCase):
                         str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
                         "wal",
                     )
-                    self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 2000)
+                    self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
                 finally:
                     connection.close()
         finally:

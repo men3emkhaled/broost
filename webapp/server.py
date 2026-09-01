@@ -2526,14 +2526,9 @@ def admin_orders(
         if len(val_from) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_from):
             val_from = f"{val_from} 08:00:00"
         dt_from = parse_utc_datetime(val_from)
-        if dt_from:
-            clean_space = dt_from.strftime("%Y-%m-%d %H:%M:%S")
-            clean_iso = dt_from.strftime("%Y-%m-%dT%H:%M:%S")
-            clauses.append("(created_at >= ? OR replace(created_at, ' ', 'T') >= ?)")
-            params.extend((clean_space, clean_iso))
-        else:
-            clauses.append("(created_at >= ? OR replace(created_at, ' ', 'T') >= ?)")
-            params.extend((val_from, val_from))
+        clean_from = dt_from.strftime("%Y-%m-%d %H:%M:%S") if dt_from else val_from
+        clauses.append("replace(replace(created_at, 'T', ' '), 'Z', '') >= ?")
+        params.append(clean_from)
     if date_to:
         val_to = date_to.strip()
         if len(val_to) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_to):
@@ -2543,14 +2538,9 @@ def admin_orders(
             except ValueError:
                 pass
         dt_to = parse_utc_datetime(val_to)
-        if dt_to:
-            next_space = dt_to.strftime("%Y-%m-%d %H:%M:%S")
-            next_iso = dt_to.strftime("%Y-%m-%dT%H:%M:%S")
-            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
-            params.extend((next_space, next_iso))
-        else:
-            clauses.append("(created_at < ? AND replace(created_at, ' ', 'T') < ?)")
-            params.extend((val_to, val_to))
+        clean_to = dt_to.strftime("%Y-%m-%d %H:%M:%S") if dt_to else val_to
+        clauses.append("replace(replace(created_at, 'T', ' '), 'Z', '') < ?")
+        params.append(clean_to)
     if source:
         clauses.append("source=?")
         params.append(source.upper())

@@ -29,7 +29,7 @@ from core.order_finance import reconcile_order_finance
 SYNC_REQUEST_TIMEOUT_SECONDS = 12
 SYNC_REQUEST_ATTEMPTS = 2
 SYNC_RETRY_DELAY_SECONDS = 0.65
-POS_SYNC_BATCH_SIZE = 5
+POS_SYNC_BATCH_SIZE = 25
 POS_SYNC_REQUEST_TIMEOUT_SECONDS = 25
 MAX_SYNC_LOG_BYTES = 2 * 1024 * 1024
 _SSL_CONTEXT: ssl.SSLContext | None = None
@@ -300,6 +300,16 @@ class OnlineSyncManager(QObject):
             f"/api/sync/customer-orders/{int(order_id)}", method="DELETE"
         )
 
+    def has_pending_pos_orders(self) -> bool:
+        conn = database.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM pos_order_sync_queue LIMIT 1"
+            ).fetchone()
+            return bool(row)
+        finally:
+            conn.close()
+
     def _poll_worker(self) -> None:
         if not self._busy_lock.acquire(blocking=False):
             return
@@ -320,7 +330,7 @@ class OnlineSyncManager(QObject):
                 method="POST",
                 payload=heartbeat_payload,
             )
-            if time.monotonic() - self._last_orders_push >= 20:
+            if time.monotonic() - self._last_orders_push >= 4 or self.has_pending_pos_orders():
                 try:
                     self._push_pos_orders()
                 except Exception as exc:
@@ -895,9 +905,11 @@ class OnlineSyncManager(QObject):
                     order["proof_bytes"] = self._request_bytes(f"/api/sync/orders/{order['id']}/proof")
                 except Exception:
                     order["proof_bytes"] = b""
+            order_status = str(order.get("status") or "").upper()
+            is_historical = order_status in ("COMPLETED", "CANCELLED")
             if event.get("event_type") == "ORDER_CANCELLED_BY_CUSTOMER":
                 self.order_updated.emit(order)
-            elif was_new:
+            elif was_new and not is_historical:
                 self.order_received.emit(order)
             else:
                 self.order_updated.emit(order)
