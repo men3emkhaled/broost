@@ -38,6 +38,14 @@ a = Analysis(
     optimize=0,
 )
 
+# Windows supplies these DLLs. A developer's PATH may contain incompatible
+# copies (especially ICU with version-suffixed exports), which break Qt startup.
+a.binaries = [
+    entry for entry in a.binaries
+    if not os.path.basename(entry[0]).lower().startswith('api-ms-win-')
+    and os.path.basename(entry[0]).lower() not in {'ucrtbase.dll', 'icuuc.dll', 'icuin.dll'}
+]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

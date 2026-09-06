@@ -44,6 +44,14 @@ a = Analysis(
     optimize=0,
 )
 
+# Keep Windows system DLLs out of the bundle even when another application
+# exposes incompatible copies through the build machine's PATH.
+a.binaries = [
+    entry for entry in a.binaries
+    if not os.path.basename(entry[0]).lower().startswith('api-ms-win-')
+    and os.path.basename(entry[0]).lower() not in {'ucrtbase.dll', 'icuuc.dll', 'icuin.dll'}
+]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
