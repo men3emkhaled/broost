@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#202024">
   <title>بروست — لوحة الإدارة</title>
   <link rel="icon" type="image/png" href="/assets/images/exec-eb691454-04b6-402a-83ca-e8a6a3761f30.png">
-  <link rel="stylesheet" href="/assets/styles.css?v=20260816-3">
+  <link rel="stylesheet" href="/assets/styles.css?v=20260906-1">
 </head>
 <body class="admin-page">
   <div class="admin-shell">
@@ -75,6 +75,7 @@
             <button class="btn btn-primary" id="applyOrderFilters">عرض</button>
           </div>
 
+          <div class="notice notice-warning" id="ordersError" role="alert" hidden></div>
           <div class="orders-board">
             <section><div class="column-title"><h3>جديد</h3><span class="badge" id="newCount">0</span></div><div id="newOrders"></div></section>
             <section><div class="column-title"><h3>جاري التجهيز</h3><span class="badge" id="preparingCount">0</span></div><div id="preparingOrders"></div></section>
@@ -83,7 +84,7 @@
 
           <div class="section-head"><div><h3>المكتمل والملغي</h3><p>آخر الطلبات بنفس الفلاتر.</p></div></div>
           <div class="card table-wrap">
-            <table><thead><tr><th>الرقم</th><th>المصدر</th><th>العميل</th><th>الدفع</th><th>المنتجات</th><th>التوصيل</th><th>الحالة</th><th>الوقت</th></tr></thead><tbody id="closedOrdersTable"></tbody></table>
+            <table><thead><tr><th>الرقم</th><th>المصدر</th><th>العميل</th><th>الدفع</th><th>صافي المنتجات</th><th>التوصيل</th><th>الإجمالي</th><th>الحالة</th><th>الوقت</th><th>التفاصيل</th></tr></thead><tbody id="closedOrdersTable"></tbody></table>
           </div>
         </section>
 
@@ -249,6 +250,13 @@
     </section>
   </div>
 
+  <div class="overlay" id="orderDetailsModal" hidden>
+    <section class="modal order-details-modal" role="dialog" aria-modal="true" aria-labelledby="orderDetailsTitle">
+      <header class="modal-head"><h2 id="orderDetailsTitle">تفاصيل الطلب</h2><button class="btn btn-small" data-close-overlay="orderDetailsModal">إغلاق</button></header>
+      <div class="modal-body" id="orderDetailsBody"></div>
+    </section>
+  </div>
+
   <div class="overlay" id="proofModal" hidden>
     <section class="modal">
       <header class="modal-head"><h2>إثبات التحويل</h2><button class="btn btn-small" data-close-overlay="proofModal">إغلاق</button></header>
@@ -257,6 +265,6 @@
   </div>
 
   <script src="/assets/config.js"></script>
-  <script src="/assets/admin.js?v=20260827-1" defer></script>
+  <script src="/assets/admin.js?v=20260906-1" defer></script>
 </body>
 </html>

@@ -1180,6 +1180,13 @@ th { color: var(--muted); background: #fafafa; font-size: 13px; }
 .trust-warning { margin: 9px 0; padding: 9px 11px; font-size: 12px; font-weight: 800; }
 .review-text-cell { min-width: 260px; max-width: 520px; white-space: normal; line-height: 1.7; }
 .customer-profile-modal { width: min(900px, 100%); }
+.order-details-modal { width: min(900px, 100%); }
+.order-details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 0 0 24px; }
+.order-details-grid dt { color: var(--muted); font-size: 13px; margin-bottom: 5px; }
+.order-details-grid dd { margin: 0; overflow-wrap: anywhere; }
+.order-details-totals { margin-top: 24px; }
+.order-detail-size { display: block; margin-top: 5px; }
+.order-detail-notes { white-space: pre-wrap; overflow-wrap: anywhere; }
 .profile-trust-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px; background: #edf8f1; border: 1px solid #b9dfc7; border-radius: 16px; }
 .profile-trust-card.needs-call { background: var(--warning-soft); border-color: #edcf82; }
 .profile-trust-card h3 { margin: 4px 0 0; font-size: 26px; }

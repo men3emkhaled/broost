@@ -1648,6 +1648,61 @@ class BroostEndToEndTest(unittest.TestCase):
         }
         self.assertEqual(repaired, remote_orders)
 
+    def test_pos_order_details_reach_admin_through_durable_queue(self):
+        conn = database.get_connection()
+        try:
+            customer = conn.execute(
+                "INSERT INTO customers (name, phone, address) VALUES (?, ?, ?)",
+                ("عميل تفاصيل اختبار", "01077778888", "منطقة اختبار - شارع الاختبار"),
+            ).lastrowid
+            driver = conn.execute("INSERT INTO drivers (name) VALUES ('طيار اختبار')").lastrowid
+            shift = conn.execute("INSERT INTO shifts (cashier_name) VALUES ('كاشير اختبار')").lastrowid
+            order_id = conn.execute(
+                "INSERT INTO orders (customer_id, driver_id, shift_id, channel, source, status, "
+                "payment_method, subtotal, discount, delivery_fee, total, notes, area_name, created_at) "
+                "VALUES (?, ?, ?, 'DELIVERY', 'POS', 'PENDING', 'CASH', 150, 10, 20, 160, "
+                "'بدون ملح', 'منطقة اختبار', '2026-09-06 12:00:00')",
+                (customer, driver, shift),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO order_items (order_id, item_name, size_name, quantity, price, extras_json) "
+                "VALUES (?, 'وجبة اختبار', 'كبير', 2, 75, ?)",
+                (order_id, json.dumps({"صوص": 5, "__spicy__": True})),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        manager = OnlineSyncManager()
+        for _ in range(20):
+            manager._push_pos_orders()
+            if not manager.has_pending_pos_orders():
+                break
+        mirrored = next(row for row in self.request('/api/admin/orders?source=POS', admin=True)
+                        if row['local_order_id'] == order_id)
+        self.assertEqual(mirrored['status'], 'PREPARING')
+        for field, expected in {
+            'customer_name': 'عميل تفاصيل اختبار', 'customer_phone': '01077778888',
+            'detailed_address': 'شارع الاختبار', 'cashier_name': 'كاشير اختبار',
+            'driver_name': 'طيار اختبار', 'notes': 'بدون ملح', 'subtotal': 150,
+            'discount': 10, 'delivery_fee': 20, 'total': 160,
+        }.items():
+            self.assertEqual(mirrored[field], expected, field)
+        item = mirrored['items'][0]
+        self.assertEqual((item['item_name'], item['size_name'], item['quantity'], item['unit_price']),
+                         ('وجبة اختبار', 'كبير', 2, 75))
+        self.assertEqual(len(item['extras']), 2)
+        conn = database.get_connection()
+        try:
+            conn.execute("UPDATE orders SET status='COMPLETED', notes='تم التسليم' WHERE id=?", (order_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        manager._push_pos_orders()
+        history = next(row for row in self.request('/api/admin/orders?source=POS&status=COMPLETED', admin=True)
+                       if row['local_order_id'] == order_id)
+        self.assertEqual(history['notes'], 'تم التسليم')
+        self.assertEqual(len(history['items']), 1)
+
     def test_pos_invoice_is_mirrored_immediately_and_delete_is_acknowledged(self):
         local_order_id = 880001
         pushed = self.request(

@@ -9,8 +9,14 @@ from pathlib import Path
 from typing import Any
 
 
-FALLBACK_SERVER_URL = "https://broost-production-4411.up.railway.app"
+FALLBACK_SERVER_URL = "https://broost-production-1dcb.up.railway.app"
+LEGACY_SERVER_URLS = {"https://broost-production-4411.up.railway.app"}
 FALLBACK_SYNC_KEY = "broost-local-sync"
+
+
+def normalize_server_url(value: str) -> str:
+    url = str(value).strip().rstrip("/")
+    return FALLBACK_SERVER_URL if url.lower() in LEGACY_SERVER_URLS else url
 
 
 def _candidate_files() -> list[Path]:
@@ -30,6 +36,6 @@ def load_pos_defaults() -> dict[str, str]:
         except (OSError, ValueError, TypeError):
             continue
     return {
-        "server_url": str(os.getenv("BROOST_POS_SERVER_URL") or payload.get("server_url") or FALLBACK_SERVER_URL).strip().rstrip("/"),
+        "server_url": normalize_server_url(os.getenv("BROOST_POS_SERVER_URL") or payload.get("server_url") or FALLBACK_SERVER_URL),
         "sync_key": str(os.getenv("BROOST_SYNC_KEY") or payload.get("sync_key") or FALLBACK_SYNC_KEY).strip(),
     }

@@ -18,6 +18,7 @@ const adminState = {
   issueOrder: null,
   customerProfile: null,
   proofUrl: null,
+  detailOrderId: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -47,7 +48,7 @@ async function loadAllOrderPages(baseUrl) {
   for (let offset = 0; ; offset += pageSize) {
     const separator = baseUrl.includes("?") ? "&" : "?";
     const page = await adminApi(`${baseUrl}${separator}limit=${pageSize}&offset=${offset}`);
-    if (!Array.isArray(page)) return rows;
+    if (!Array.isArray(page)) throw new Error("استجابة الطلبات غير صحيحة؛ أعد المحاولة.");
     rows.push(...page);
     if (page.length < pageSize) return rows;
   }
@@ -177,8 +178,8 @@ async function loadOrders(force = false) {
       const query = filterQuery();
       const startObj = defaultBusinessDayStart();
       const businessStart = startObj.toISOString();
-      const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`).catch(() => []);
-      const filteredRequest = query ? loadAllOrderPages(`/api/admin/orders?${query}`).catch(() => []) : dashboardRequest;
+      const dashboardRequest = loadAllOrderPages(`/api/admin/orders?date_from=${encodeURIComponent(businessStart)}`);
+      const filteredRequest = loadAllOrderPages(`/api/admin/orders${query ? `?${query}` : ""}`);
       const businessDayRequest = adminApi("/api/admin/business-day").catch(() => null);
       
       const [dashOrders, filteredOrders, bDay] = await Promise.all([
@@ -201,11 +202,17 @@ async function loadOrders(force = false) {
       }
       
       renderOrders();
+      if (adminState.detailOrderId && !$("#orderDetailsModal").hidden) openOrderDetails(adminState.detailOrderId);
+      $("#ordersError").hidden = true;
+      $("#adminConnection").textContent = "● الطلبات محدثة";
+      $("#adminConnection").className = "badge badge-success";
     } catch (err) {
       console.error("loadOrders error:", err);
-      if ($("#adminTodayLabel")) {
-        $("#adminTodayLabel").textContent = "تعذر تحميل البيانات - اضغط تحديث البيانات للبدء";
-      }
+      $("#ordersError").textContent = `تعذر تحديث الطلبات: ${err.message}. البيانات المعروضة من آخر تحميل ناجح؛ ستتم إعادة المحاولة تلقائيًا.`;
+      $("#ordersError").hidden = false;
+      $("#adminConnection").textContent = "تعذر تحديث الطلبات";
+      $("#adminConnection").className = "badge badge-danger";
+      throw err;
     }
   })();
   try {
@@ -336,7 +343,44 @@ function renderOrders() {
 
   const closed = orders.filter((row) => ["COMPLETED", "CANCELLED"].includes(row.status));
   $("#closedOrdersTable").innerHTML = closed.map((row) => `
-    <tr><td><strong>${escapeHtml(row.public_number)}</strong></td><td>${sourceBadge(row.source)}</td><td><button class="customer-link" data-open-customer="${escapeHtml(row.customer_phone || "")}">${escapeHtml(row.customer_name)}</button>${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(row.subtotal)}</td><td>${money(row.delivery_fee)}</td><td>${row.cancelled_by === "TIMEOUT" ? "مرفوض تلقائيًا" : statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
+    <tr><td><button class="customer-link" data-order-details="${Number(row.id)}">${escapeHtml(row.public_number)}</button></td><td>${sourceBadge(row.source)}</td><td>${escapeHtml(row.customer_name)}${reliabilityBadge(row.customer_reliability)}</td><td>${paymentLabel(row)}</td><td>${money(productNet(row))}</td><td>${money(row.delivery_fee)}</td><td><strong>${money(row.total)}</strong></td><td>${row.cancelled_by === "TIMEOUT" ? "مرفوض تلقائيًا" : statusLabel(row.status)}</td><td>${formatDate(row.created_at)}</td><td><button class="btn btn-small" data-order-details="${Number(row.id)}">كل التفاصيل</button></td></tr>`).join("") || `<tr><td colspan="10" class="empty-state">لا توجد طلبات مكتملة أو ملغاة بالفلاتر الحالية.</td></tr>`;
+}
+
+function openOrderDetails(id) {
+  const order = adminState.orders.find((row) => row.id === id)
+    || adminState.dashboardOrders.find((row) => row.id === id);
+  if (!order) return;
+  adminState.detailOrderId = id;
+  $("#orderDetailsTitle").textContent = `تفاصيل الطلب ${order.public_number}`;
+  const fields = [
+    ["المصدر", sourceLabel(order.source)],
+    ["رقم الكاشير", order.local_order_id ?? "—"],
+    ["الحالة", statusLabel(order.status)],
+    ["طريقة الاستلام", order.fulfillment === "DELIVERY" ? "دليفري" : "استلام من المطعم"],
+    ["العميل", order.customer_name], ["الموبايل", order.customer_phone || "بدون رقم"],
+    ["المنطقة", order.area_name || "—"], ["العنوان", order.detailed_address || "—"],
+    ["الكاشير", order.cashier_name || "—"], ["الطيار", order.driver_name || "—"],
+    ["الدفع", paymentLabel(order)], ["إنشاء الطلب", formatDate(order.created_at)],
+    ["آخر تحديث", formatDate(order.updated_at)], ["إغلاق الطلب", formatDate(order.closed_at)],
+  ];
+  if (order.cancelled_by) fields.push(["الإلغاء بواسطة", ({ TIMEOUT: "انتهاء مهلة قبول الطلب", CASHIER: "الكاشير", CUSTOMER: "العميل", ADMIN: "الإدارة" })[order.cancelled_by] || order.cancelled_by]);
+  $("#orderDetailsBody").innerHTML = `
+    <dl class="order-details-grid">${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+    <h3>الأصناف</h3>
+    <div class="table-wrap"><table><thead><tr><th>الصنف والحجم</th><th>الإضافات</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>
+      ${(order.items || []).map((item) => `<tr><td><strong>${escapeHtml(item.item_name)}</strong><small class="order-detail-size">${escapeHtml(item.size_name || "عادي")}</small></td><td>${(item.extras || []).map((extra) => `${escapeHtml(extra.name)} (${money(extra.price)})`).join("، ") || "—"}</td><td>${Number(item.quantity || 0)}</td><td>${money(item.unit_price)}</td><td>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</td></tr>`).join("")}
+    </tbody></table></div>
+    <dl class="order-details-grid order-details-totals">
+      <div><dt>إجمالي الأصناف</dt><dd>${money(order.subtotal)}</dd></div>
+      <div><dt>الخصم</dt><dd>${money(order.discount)}</dd></div>
+      <div><dt>التوصيل</dt><dd>${money(order.delivery_fee)}</dd></div>
+      <div><dt>الإجمالي النهائي</dt><dd><strong>${money(order.total)}</strong></dd></div>
+      <div><dt>نقاط مستخدمة</dt><dd>${Number(order.loyalty?.points_redeemed || order.loyalty_points_redeemed || 0)}</dd></div>
+      <div><dt>نقاط مكتسبة</dt><dd>${Number(order.loyalty?.points_earned || order.loyalty_points_earned || 0)}</dd></div>
+    </dl>
+    <h3>ملاحظات الطلب</h3><p class="order-detail-notes">${escapeHtml(order.notes || "لا توجد ملاحظات")}</p>
+    <div class="inline-actions">${order.has_payment_proof ? `<button class="btn btn-small" data-show-proof="${Number(order.id)}">عرض إثبات التحويل</button>` : ""}${order.customer_phone ? `<button class="btn btn-small" data-open-customer="${escapeHtml(order.customer_phone)}">سجل العميل</button>` : ""}</div>`;
+  $("#orderDetailsModal").hidden = false;
 }
 
 function orderCard(order) {
@@ -357,16 +401,17 @@ function orderCard(order) {
     ${reliability.needs_call ? `<div class="notice notice-warning trust-warning">اتصل بالعميل للتأكيد قبل تجهيز الطلب.</div>` : ""}
     ${order.fulfillment === "DELIVERY" ? `<p>${escapeHtml(order.area_name)} — ${escapeHtml(order.detailed_address)}</p>` : ""}
     <div class="order-items-mini">${orderItemsSummary(order)}</div>
+    ${order.notes ? `<p class="order-detail-notes"><strong>ملاحظات:</strong> ${escapeHtml(order.notes)}</p>` : ""}
     ${loyaltyNotice}
     <p>${paymentLabel(order)} · ${formatDate(order.created_at)}</p>
-    <div class="inline-actions">${proofActions}${statusActions(order)}${order.customer_phone ? `<button class="btn btn-small" data-open-customer="${escapeHtml(order.customer_phone)}">سجل العميل</button><button class="btn btn-small" data-add-issue="${order.id}" data-customer-label="${escapeHtml(order.customer_name)}">تسجيل ملاحظة</button>` : ""}</div>
+    <div class="inline-actions"><button class="btn btn-small" data-order-details="${Number(order.id)}">كل التفاصيل</button>${proofActions}${statusActions(order)}${order.customer_phone ? `<button class="btn btn-small" data-open-customer="${escapeHtml(order.customer_phone)}">سجل العميل</button><button class="btn btn-small" data-add-issue="${order.id}" data-customer-label="${escapeHtml(order.customer_name)}">تسجيل ملاحظة</button>` : ""}</div>
   </article>`;
 }
 
 function orderItemsSummary(order) {
   return (order.items || []).map((item) => {
     const details = (item.extras || []).map((extra) => extra.name).filter(Boolean).join("، ");
-    return `<div><strong>${Number(item.quantity || 1)}× ${escapeHtml(item.item_name)}</strong>${details ? `<small>${escapeHtml(details)}</small>` : ""}</div>`;
+    return `<div><strong>${Number(item.quantity || 1)}× ${escapeHtml(item.item_name)} · ${escapeHtml(item.size_name || "عادي")}</strong>${details ? `<small>${escapeHtml(details)}</small>` : ""}</div>`;
   }).join("") || "لا توجد أصناف";
 }
 
@@ -391,7 +436,7 @@ function paymentLabel(order) {
   if (order.payment_method === "CASH") return "نقدي";
   return ({ AWAITING_PAYMENT: "بانتظار التحويل", PROOF_UPLOADED: "تحويل تحت المراجعة", CONFIRMED: "محفظة مؤكدة", REJECTED: "تحويل مرفوض" })[order.payment_status] || "محفظة";
 }
-function formatDate(value) { return value ? new Date(value).toLocaleString("ar-EG", { dateStyle: "short", timeStyle: "short" }) : "—"; }
+function formatDate(value) { return parsedLocalDate(value)?.toLocaleString("ar-EG", { dateStyle: "short", timeStyle: "short" }) || "—"; }
 function reliabilityClass(status) { return ({ RELIABLE: "badge-success", REGULAR: "badge-brand", NEEDS_CONFIRMATION: "badge-warning", UNKNOWN: "" })[status] || ""; }
 function reliabilityBadge(reliability = {}) { return `<span class="badge trust-badge ${reliabilityClass(reliability.status)}">${escapeHtml(reliability.label || "عميل جديد")}</span>`; }
 function reliabilityFacts(reliability = {}) { return `${Number(reliability.completed_orders || 0)} مكتمل · ${Number(reliability.open_issues || 0)} ملاحظة مفتوحة · ${Number(reliability.confirmed_wallets || 0)} محفظة مؤكدة`; }
@@ -769,12 +814,12 @@ populateDaySelect();
 $("#ordersDaySelect")?.addEventListener("change", (e) => {
   const customInput = $("#ordersCustomDate");
   if (customInput) customInput.hidden = (e.target.value !== "CUSTOM");
-  loadOrders(true);
+  loadOrders(true).catch(() => {});
 });
-$("#ordersCustomDate")?.addEventListener("change", () => loadOrders(true));
-$("#ordersSource")?.addEventListener("change", () => loadOrders(true));
-$("#refreshOrdersBtn").addEventListener("click", () => loadOrders(true));
-$("#applyOrderFilters").addEventListener("click", () => loadOrders(true));
+$("#ordersCustomDate")?.addEventListener("change", () => loadOrders(true).catch(() => {}));
+$("#ordersSource")?.addEventListener("change", () => loadOrders(true).catch(() => {}));
+$("#refreshOrdersBtn").addEventListener("click", () => loadOrders(true).catch(() => {}));
+$("#applyOrderFilters").addEventListener("click", () => loadOrders(true).catch(() => {}));
 $("#customerSearchBtn").addEventListener("click", loadCustomers);
 $("#customerSearchInput").addEventListener("keydown", (event) => { if (event.key === "Enter") loadCustomers(); });
 $("#addAreaBtn").addEventListener("click", () => openArea());
@@ -797,6 +842,9 @@ document.addEventListener("click", async (event) => {
   const close = event.target.closest("[data-close-overlay]");
   if (close) $("#" + close.dataset.closeOverlay).hidden = true;
 
+  const details = event.target.closest("[data-order-details]");
+  if (details) openOrderDetails(Number(details.dataset.orderDetails));
+
   const status = event.target.closest("[data-order-status]");
   if (status) {
     if (status.dataset.orderStatus === "CANCELLED" && !confirm("إلغاء الطلب؟ لو استخدم نقاط هترجع لرصيده تلقائيًا.")) return;
@@ -812,7 +860,10 @@ document.addEventListener("click", async (event) => {
   const proof = event.target.closest("[data-show-proof]");
   if (proof) await showProof(Number(proof.dataset.showProof));
   const customer = event.target.closest("[data-open-customer]");
-  if (customer) await openCustomer(customer.dataset.openCustomer);
+  if (customer) {
+    $("#orderDetailsModal").hidden = true;
+    await openCustomer(customer.dataset.openCustomer);
+  }
   const addIssue = event.target.closest("[data-add-issue]");
   if (addIssue) {
     const order = adminState.orders.find((row) => row.id === Number(addIssue.dataset.addIssue));

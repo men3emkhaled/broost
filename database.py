@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from core.time_utils import legacy_utc_to_local_db_timestamp
-from core.pos_defaults import load_pos_defaults
+from core.pos_defaults import load_pos_defaults, normalize_server_url
 
 if getattr(sys, 'frozen', False):
     # Bundled executable path
@@ -286,34 +286,41 @@ def init_db():
             queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Replace the old second-resolution tokens. Two edits within one second
+    # must remain distinguishable while a network upload is in flight.
+    for trigger in (
+        "trg_queue_pos_order_insert", "trg_queue_pos_order_update",
+        "trg_queue_pos_item_insert", "trg_queue_pos_item_update", "trg_queue_pos_item_delete",
+    ):
+        cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_insert AFTER INSERT ON orders BEGIN
             INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.id, CURRENT_TIMESTAMP);
+            VALUES (NEW.id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
     cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_update AFTER UPDATE ON orders BEGIN
             INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.id, CURRENT_TIMESTAMP);
+            VALUES (NEW.id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
     cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_insert AFTER INSERT ON order_items BEGIN
             INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.order_id, CURRENT_TIMESTAMP);
+            VALUES (NEW.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
     cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_update AFTER UPDATE ON order_items BEGIN
             INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.order_id, CURRENT_TIMESTAMP);
+            VALUES (NEW.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
     cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_delete AFTER DELETE ON order_items BEGIN
             INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (OLD.order_id, CURRENT_TIMESTAMP);
+            VALUES (OLD.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
     cursor.execute(
@@ -387,6 +394,19 @@ def init_db():
                      ("web_initial_orders_queued", "0"),
                      ("web_initial_orders_synced", "0")]:
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
+
+    # Upgrade existing installations too; INSERT OR IGNORE preserves old URLs.
+    saved_url = cursor.execute(
+        "SELECT value FROM settings WHERE key='web_server_url'"
+    ).fetchone()[0] or ""
+    migrated_url = normalize_server_url(saved_url)
+    if migrated_url != saved_url.strip().rstrip("/"):
+        cursor.execute("UPDATE settings SET value=? WHERE key='web_server_url'", (migrated_url,))
+        # Reconcile history with the new destination, retaining remote identities.
+        cursor.execute(
+            "UPDATE settings SET value='0' WHERE key IN "
+            "('web_initial_orders_queued', 'web_initial_orders_synced')"
+        )
     
     # Auto-update old defaults to 9999 if they haven't been customized yet
     cursor.execute("UPDATE settings SET value='9999' WHERE key='app_password' AND value='123'")

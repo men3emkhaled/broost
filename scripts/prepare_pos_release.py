@@ -6,17 +6,21 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 from dotenv import dotenv_values
 
 
-DEFAULT_SERVER_URL = "https://broost-production-4411.up.railway.app"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.pos_defaults import FALLBACK_SERVER_URL, normalize_server_url
+
+DEFAULT_SERVER_URL = FALLBACK_SERVER_URL
 
 
 def load_values(root: Path) -> dict[str, str]:
     env_file = dotenv_values(root / ".env") if (root / ".env").exists() else {}
-    server_url = str(os.getenv("BROOST_POS_SERVER_URL") or env_file.get("BROOST_POS_SERVER_URL") or DEFAULT_SERVER_URL).strip().rstrip("/")
+    server_url = normalize_server_url(os.getenv("BROOST_POS_SERVER_URL") or env_file.get("BROOST_POS_SERVER_URL") or DEFAULT_SERVER_URL)
     sync_key = str(os.getenv("BROOST_SYNC_KEY") or env_file.get("BROOST_SYNC_KEY") or "").strip()
     if not sync_key:
         raise SystemExit("BROOST_SYNC_KEY is required in .env when building the POS installer")

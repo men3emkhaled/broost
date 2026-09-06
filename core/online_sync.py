@@ -124,6 +124,7 @@ class OnlineSyncManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._busy_lock = threading.Lock()
+        self._pos_push_lock = threading.Lock()
         self._last_connected: bool | None = None
         self._last_connection_message = ""
         self._last_orders_push = 0.0
@@ -1171,6 +1172,14 @@ class OnlineSyncManager(QObject):
             conn.close()
 
     def _push_pos_orders(self) -> None:
+        if not self._pos_push_lock.acquire(blocking=False):
+            return
+        try:
+            self._push_pos_orders_locked()
+        finally:
+            self._pos_push_lock.release()
+
+    def _push_pos_orders_locked(self) -> None:
         initial = self._setting("web_initial_orders_synced", "0") != "1"
         conn = database.get_connection()
         try:
@@ -1237,8 +1246,8 @@ class OnlineSyncManager(QObject):
                         (int(remote_id), int(local_order_id)),
                     )
                     conn.execute(
-                        "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE'",
-                        (int(remote_id), int(local_order_id)),
+                        "UPDATE orders SET remote_id=? WHERE id=? AND source='ONLINE' AND remote_id IS NOT ?",
+                        (int(remote_id), int(local_order_id), int(remote_id)),
                     )
                 for local_order_id in acknowledged_deletions:
                     conn.execute(
@@ -1247,8 +1256,8 @@ class OnlineSyncManager(QObject):
                     )
                 for sent_order in orders:
                     conn.execute(
-                        "DELETE FROM pos_order_sync_queue WHERE local_order_id=?",
-                        (int(sent_order["local_order_id"]),),
+                        "DELETE FROM pos_order_sync_queue WHERE local_order_id=? AND queued_at=?",
+                        (int(sent_order["local_order_id"]), sent_order["_sync_queue_token"]),
                     )
                 conn.commit()
             finally:

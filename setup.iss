@@ -6,7 +6,7 @@
 [Setup]
 AppId=Broost POS
 AppName=نظام الكاشير
-AppVersion=1.2
+AppVersion=1.3
 AppPublisher=Men3em Khaled
 DefaultDirName={userappdata}\Programs\Cashier System
 DefaultGroupName=نظام الكاشير
@@ -27,7 +27,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#ReleaseSourceDir}\*"; DestDir: "{app}"; Excludes: "broost_pos.db,backups\*,.last_backup_date,web_data\*"; Flags: recursesubdirs createallsubdirs
-Source: "{#ReleaseSourceDir}\broost_pos.db"; DestDir: "{app}"; Flags: onlyifdoesntexist
+Source: "{#ReleaseSourceDir}\broost_pos.db"; DestDir: "{app}"; Flags: onlyifdoesntexist skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\نظام الكاشير"; Filename: "{app}\CashierSystemGuard.exe"

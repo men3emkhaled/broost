@@ -5,7 +5,10 @@ const root = process.cwd();
 const source = path.join(root, "webapp", "static");
 const output = path.join(root, "frontend-dist");
 const assets = path.join(output, "assets");
-const apiBaseUrl = String(process.env.API_BASE_URL || "").trim().replace(/\/$/, "");
+const productionApiUrl = "https://broost-production-1dcb.up.railway.app";
+const configuredApiUrl = String(process.env.API_BASE_URL || (process.env.VERCEL ? productionApiUrl : "")).trim().replace(/\/$/, "");
+const apiBaseUrl = configuredApiUrl.toLowerCase() === "https://broost-production-4411.up.railway.app"
+  ? productionApiUrl : configuredApiUrl;
 
 if (process.env.VERCEL && !apiBaseUrl) {
   throw new Error("API_BASE_URL is required. Set it to the Railway public URL.");
