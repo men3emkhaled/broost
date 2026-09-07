@@ -69,7 +69,7 @@ LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
 LOYALTY_REWARD_CODE_VALUE = Decimal("150")
 POS_HEARTBEAT_TIMEOUT_SECONDS = 30
 ORDER_ACCEPTANCE_TIMEOUT_MINUTES = 30
-APP_RELEASE = "2026-09-07-audit-v1"
+APP_RELEASE = "2026-09-08-fresh-start-v1"
 WEB_SCHEMA_VERSION = "2026-08-26-v2"
 
 ORDER_STATUS_TRANSITIONS = {
@@ -514,6 +514,11 @@ def init_web_db() -> None:
             reconcile_order_loyalty(conn, loyalty_order["id"])
         set_setting(conn, "web_schema_version", WEB_SCHEMA_VERSION)
 
+    if getattr(sys, 'frozen', False) and not USING_POSTGRES:
+        from core.pos_defaults import load_pos_defaults
+        from core.operational_reset import reset_sqlite_operations
+        reset_sqlite_operations(DB_PATH, load_pos_defaults(), web=True)
+
 
 def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -852,7 +857,7 @@ def require_admin(request: Request, x_admin_key: str = Header(default="")) -> No
 
 def require_sync(x_sync_key: str = Header(default="")) -> None:
     with db_connection() as conn:
-        expected = setting(conn, "sync_key", "broost-local-sync")
+        expected = setting(conn, "active_sync_key", "") or setting(conn, "sync_key", "broost-local-sync")
     if not secrets.compare_digest(x_sync_key.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
 
@@ -2179,7 +2184,7 @@ def download_admin_backup() -> JSONResponse:
             "created_at": utc_now(),
             "settings": {
                 row["key"]: row["value"] for row in conn.execute(
-                    "SELECT key, value FROM settings WHERE key NOT IN ('admin_password', 'sync_key')"
+                    "SELECT key, value FROM settings WHERE key NOT IN ('admin_password', 'sync_key', 'active_sync_key')"
                 ).fetchall()
             },
             "tables": {

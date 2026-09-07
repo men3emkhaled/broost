@@ -6,7 +6,7 @@
 [Setup]
 AppId=Broost POS
 AppName=نظام الكاشير
-AppVersion=1.4
+AppVersion=1.5
 AppPublisher=Men3em Khaled
 DefaultDirName={userappdata}\Programs\Cashier System
 DefaultGroupName=نظام الكاشير

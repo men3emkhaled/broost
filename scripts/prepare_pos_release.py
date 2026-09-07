@@ -24,7 +24,8 @@ def load_values(root: Path) -> dict[str, str]:
     sync_key = str(os.getenv("BROOST_SYNC_KEY") or env_file.get("BROOST_SYNC_KEY") or "").strip()
     if not sync_key:
         raise SystemExit("BROOST_SYNC_KEY is required in .env when building the POS installer")
-    return {"server_url": server_url, "sync_key": sync_key}
+    return {"server_url": server_url, "sync_key": sync_key,
+            "operational_reset_id": str(os.getenv('BROOST_OPERATIONAL_RESET_ID') or env_file.get('BROOST_OPERATIONAL_RESET_ID') or '')}
 
 
 def write_defaults(output: Path, values: dict[str, str]) -> None:

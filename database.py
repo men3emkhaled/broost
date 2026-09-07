@@ -423,6 +423,8 @@ def init_db():
     cleanup_legacy_mock_data(conn)
     seed_reference_data(conn)
     conn.close()
+    from core.operational_reset import reset_sqlite_operations
+    reset_sqlite_operations(DB_PATH, pos_defaults)
 
 def repair_legacy_online_timestamps(conn):
     """One-time repair for website UTC values that older sync code saved as local time."""

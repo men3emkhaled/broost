@@ -41,4 +41,5 @@ def load_pos_defaults() -> dict[str, str]:
     return {
         "server_url": normalize_server_url(os.getenv("BROOST_POS_SERVER_URL") or payload.get("server_url") or FALLBACK_SERVER_URL),
         "sync_key": str(os.getenv("BROOST_SYNC_KEY") or payload.get("sync_key") or FALLBACK_SYNC_KEY).strip(),
+        "operational_reset_id": str(os.getenv("BROOST_OPERATIONAL_RESET_ID") or payload.get("operational_reset_id") or '').strip(),
     }

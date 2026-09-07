@@ -23,6 +23,7 @@ datas_list.extend(
     for name in image_files
 )
 datas_list.append((os.path.join(ROOT, "logo.ico"), "."))
+datas_list.append((os.path.join(ROOT, "build", "pos_defaults.json"), "."))
 
 a = Analysis(
     ["run_web.py"],
