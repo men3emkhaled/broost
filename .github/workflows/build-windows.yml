@@ -11,10 +11,11 @@ jobs:
     runs-on: windows-latest
     env:
       BROOST_LOAD_DOTENV: "0"
-      BROOST_WEB_DATA_DIR: "${{ runner.temp }}/broost-web-tests"
       APP_ENV: development
     steps:
       - uses: actions/checkout@v4
+      - name: Isolate test data
+        run: '"BROOST_WEB_DATA_DIR=$env:RUNNER_TEMP/broost-web-tests" >> $env:GITHUB_ENV'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
