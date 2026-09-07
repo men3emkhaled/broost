@@ -6,7 +6,8 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from fastapi import Request, HTTPException
 
 from webapp.db import PostgresConnection
 from webapp import server
@@ -21,6 +22,29 @@ class FakePsycopg:
 
 
 class PostgresConnectionTest(unittest.TestCase):
+    def test_direct_admin_api_authentication_is_rate_limited_too(self):
+        request = Request({'type': 'http', 'client': ('203.0.113.99', 1234), 'headers': []})
+        key = ('203.0.113.99', 'admin-auth-failures')
+        server._RATE_BUCKETS.pop(key, None)
+        try:
+            with patch.object(server, 'db_connection') as connection, patch.object(server, 'setting', return_value='test-secret'):
+                connection.return_value.__enter__.return_value = object()
+                for _ in range(8):
+                    with self.assertRaises(HTTPException) as failure:
+                        server.require_admin(request, 'كلمة خاطئة')
+                    self.assertEqual(failure.exception.status_code, 401)
+                with self.assertRaises(HTTPException) as limited:
+                    server.require_admin(request, 'another-guess')
+                self.assertEqual(limited.exception.status_code, 429)
+        finally:
+            server._RATE_BUCKETS.pop(key, None)
+
+    def test_business_day_boundary_handles_winter_time(self):
+        self.assertEqual(server.order_filter_boundary('2026-01-15'),
+                         ('2026-01-15 08:00:00', '2026-01-15 06:00:00'))
+        self.assertEqual(server.order_filter_boundary('2026-01-15', end=True),
+                         ('2026-01-16 08:00:00', '2026-01-16 06:00:00'))
+
     def setUp(self) -> None:
         self.raw_connection = MagicMock()
         self.cursor = self.raw_connection.cursor.return_value

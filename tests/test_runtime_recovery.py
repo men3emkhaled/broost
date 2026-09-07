@@ -63,6 +63,7 @@ class RuntimeRecoveryTest(unittest.TestCase):
     def test_release_launchers_use_the_recovery_guard(self):
         root = Path(__file__).resolve().parents[1]
         build_script = (root / "build_windows.bat").read_text(encoding="utf-8")
+        build_script += (root / "scripts" / "build_windows_release.py").read_text(encoding="utf-8")
         installer = (root / "setup.iss").read_text(encoding="utf-8")
         self.assertIn('CashierSystemGuard.exe', build_script)
         self.assertIn('Filename: "{app}\\CashierSystemGuard.exe"', installer)

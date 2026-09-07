@@ -32,6 +32,9 @@ def load_pos_defaults() -> dict[str, str]:
     for path in _candidate_files():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                payload = {}
+                continue
             break
         except (OSError, ValueError, TypeError):
             continue

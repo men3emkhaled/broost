@@ -3,6 +3,21 @@
 from __future__ import annotations
 
 from typing import Any
+import math
+
+
+def validate_invoice_amounts(subtotal: float, delivery_fee: float, discount: float,
+                             cash_paid: float | None = None) -> float:
+    values = [subtotal, delivery_fee, discount] + ([] if cash_paid is None else [cash_paid])
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("المبالغ يجب أن تكون أرقامًا صحيحة غير سالبة.")
+    if discount > subtotal:
+        raise ValueError("الخصم لا يمكن أن يتجاوز قيمة الأصناف.")
+    total = round(subtotal + delivery_fee - discount, 2)
+    # An empty/zero field means exact cash, matching the cashier's existing UX.
+    if cash_paid is not None and 0 < cash_paid < total:
+        raise ValueError("المبلغ المدفوع أقل من إجمالي الفاتورة.")
+    return total
 
 
 def _row_value(row: Any, index: int) -> Any:

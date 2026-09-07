@@ -1,43 +1,38 @@
-name: Build Windows Executable
+name: Validate POS and web
 
 on:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
+  validate:
     runs-on: windows-latest
-
+    env:
+      BROOST_LOAD_DOTENV: "0"
+      BROOST_WEB_DATA_DIR: "${{ runner.temp }}/broost-web-tests"
+      APP_ENV: development
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
-
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install PyQt6 pyinstaller
-
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --noconfirm --onefile --windowed --name "BroostPOS" --clean app.py
-
-    - name: Copy Database
-      run: |
-        if (Test-Path broost_pos.db) {
-          Copy-Item broost_pos.db -Destination dist/broost_pos.db
-        }
-
-    - name: Upload Build Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: BroostPOS-Windows
-        path: dist/
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: python -m pip install PyQt6 pyinstaller certifi -r requirements-web.txt
+      - name: Test backend and cashier
+        run: python -m unittest discover -s tests
+      - name: Test and build frontend
+        run: |
+          node --test tests/test_admin_orders.mjs
+          npm run build
+      - name: Check Windows packaging with local-only defaults
+        run: |
+          python -c "from pathlib import Path; import json; p=Path('build/pos_defaults.json'); p.parent.mkdir(exist_ok=True); p.write_text(json.dumps({'server_url':'http://127.0.0.1:8765','sync_key':'broost-local-sync'}))"
+          python -m PyInstaller --noconfirm BroostPOS.spec
+          python scripts/smoke_windows_release.py --app-dir dist/BroostPOS
+      # Never publish a binary with the restaurant's production sync credential
+      # as an Actions artifact: this repository is public.

@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -68,7 +69,7 @@ LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
 LOYALTY_REWARD_CODE_VALUE = Decimal("150")
 POS_HEARTBEAT_TIMEOUT_SECONDS = 30
 ORDER_ACCEPTANCE_TIMEOUT_MINUTES = 30
-APP_RELEASE = "2026-08-26-sync-v2"
+APP_RELEASE = "2026-09-07-audit-v1"
 WEB_SCHEMA_VERSION = "2026-08-26-v2"
 
 ORDER_STATUS_TRANSITIONS = {
@@ -828,17 +829,31 @@ def expire_unaccepted_orders(
     return expired_ids
 
 
-def require_admin(x_admin_key: str = Header(default="")) -> None:
+def verify_admin_secret(request: Request, supplied: str) -> None:
+    key = (request.client.host if request.client else "unknown", "admin-auth-failures")
+    now = time.monotonic()
+    with _RATE_LOCK:
+        bucket = _RATE_BUCKETS[key]
+        while bucket and bucket[0] <= now - 300:
+            bucket.popleft()
+        if len(bucket) >= 8:
+            raise HTTPException(status_code=429, detail="محاولات دخول كثيرة؛ انتظر خمس دقائق ثم حاول مجددًا")
     with db_connection() as conn:
         expected = setting(conn, "admin_password", "9999")
-    if not secrets.compare_digest(x_admin_key, expected):
+    if not secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+        with _RATE_LOCK:
+            _RATE_BUCKETS[key].append(now)
         raise HTTPException(status_code=401, detail="بيانات دخول لوحة الأدمن غير صحيحة")
+
+
+def require_admin(request: Request, x_admin_key: str = Header(default="")) -> None:
+    verify_admin_secret(request, x_admin_key)
 
 
 def require_sync(x_sync_key: str = Header(default="")) -> None:
     with db_connection() as conn:
         expected = setting(conn, "sync_key", "broost-local-sync")
-    if not secrets.compare_digest(x_sync_key, expected):
+    if not secrets.compare_digest(x_sync_key.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="مفتاح مزامنة برنامج الكاشير غير صحيح")
 
 
@@ -2101,12 +2116,14 @@ def upload_payment_proof(resume_token: str, payload: ProofInput) -> dict[str, An
 
 @app.post("/api/admin/login")
 async def admin_login(request: Request) -> dict[str, bool]:
-    data = await request.json()
+    try:
+        data = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="بيانات الدخول غير صحيحة") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="بيانات الدخول غير صحيحة")
     password = str(data.get("password", ""))
-    with db_connection() as conn:
-        expected = setting(conn, "admin_password", "9999")
-    if not secrets.compare_digest(password, expected):
-        raise HTTPException(status_code=401, detail="كلمة المرور غير صحيحة")
+    verify_admin_secret(request, password)
     return {"ok": True}
 
 
@@ -2510,6 +2527,24 @@ def delete_admin_offer(sync_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+def order_filter_boundary(value: str, *, end: bool = False) -> tuple[str, str]:
+    """POS timestamps are Cairo wall time; online timestamps are UTC."""
+    text = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            local = datetime.strptime(text, "%Y-%m-%d").replace(hour=8, tzinfo=ZoneInfo("Africa/Cairo"))
+            if end:
+                local += timedelta(days=1)
+        else:
+            local = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if local.tzinfo is None:
+                local = local.replace(tzinfo=ZoneInfo("Africa/Cairo"))
+        return (local.astimezone(ZoneInfo("Africa/Cairo")).strftime("%Y-%m-%d %H:%M:%S"),
+                local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="تاريخ فلترة الطلبات غير صحيح") from exc
+
+
 @app.get("/api/admin/orders", dependencies=[Depends(require_admin)])
 def admin_orders(
     date_from: str | None = None,
@@ -2521,26 +2556,13 @@ def admin_orders(
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
-    if date_from:
-        val_from = date_from.strip()
-        if len(val_from) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_from):
-            val_from = f"{val_from} 08:00:00"
-        dt_from = parse_utc_datetime(val_from)
-        clean_from = dt_from.strftime("%Y-%m-%d %H:%M:%S") if dt_from else val_from
-        clauses.append("replace(replace(created_at, 'T', ' '), 'Z', '') >= ?")
-        params.append(clean_from)
-    if date_to:
-        val_to = date_to.strip()
-        if len(val_to) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", val_to):
-            try:
-                base_date = datetime.strptime(val_to, "%Y-%m-%d").date()
-                val_to = (base_date + timedelta(days=1)).strftime("%Y-%m-%d 08:00:00")
-            except ValueError:
-                pass
-        dt_to = parse_utc_datetime(val_to)
-        clean_to = dt_to.strftime("%Y-%m-%d %H:%M:%S") if dt_to else val_to
-        clauses.append("replace(replace(created_at, 'T', ' '), 'Z', '') < ?")
-        params.append(clean_to)
+    timestamp_sql = "replace(replace(created_at, 'T', ' '), 'Z', '')"
+    for value, operator, is_end in ((date_from, ">=", False), (date_to, "<", True)):
+        if value:
+            local_bound, utc_bound = order_filter_boundary(value, end=is_end)
+            clauses.append(f"((source='POS' AND {timestamp_sql} {operator} ?) "
+                           f"OR (source!='POS' AND {timestamp_sql} {operator} ?))")
+            params.extend((local_bound, utc_bound))
     if source:
         clauses.append("source=?")
         params.append(source.upper())
@@ -2551,7 +2573,7 @@ def admin_orders(
     with db_connection(immediate=True) as conn:
         expire_unaccepted_orders(conn)
         rows = conn.execute(
-            f"SELECT * FROM orders {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM orders {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
         return admin_orders_to_dict(conn, rows)
@@ -3152,7 +3174,7 @@ def _sync_pos_orders_locked(payload: PosOrdersInput) -> dict[str, Any]:
 
         for order in payload.orders:
             remote_id = order.get("remote_id")
-            if remote_id:
+            if remote_id or order.get("source") == "ONLINE":
                 existing = select_for_update(
                     conn, "SELECT * FROM orders WHERE id=?", (remote_id,)
                 )
@@ -3162,26 +3184,24 @@ def _sync_pos_orders_locked(payload: PosOrdersInput) -> dict[str, Any]:
                     existing
                     and existing["source"] == "ONLINE"
                     and (
-                        existing["local_order_id"] in (None, local_order_id)
-                        or (
-                            expected_public_number
-                            and existing["public_number"] == expected_public_number
-                        )
+                        existing["public_number"] == expected_public_number
+                        if expected_public_number else existing["local_order_id"] in (None, local_order_id)
                     )
                 )
                 if not valid_mapping:
                     # A restored/replaced backend may recycle numeric IDs. Find
                     # the canonical order by its stable local mapping or public
                     # number instead of touching an unrelated customer order.
-                    existing = conn.execute(
-                        "SELECT * FROM orders WHERE source='ONLINE' AND local_order_id=? "
-                        "ORDER BY id DESC LIMIT 1",
-                        (local_order_id,),
-                    ).fetchone() if local_order_id is not None else None
-                    if not existing and expected_public_number:
+                    existing = None
+                    if expected_public_number:
                         existing = conn.execute(
                             "SELECT * FROM orders WHERE source='ONLINE' AND public_number=?",
                             (expected_public_number,),
+                        ).fetchone()
+                    elif local_order_id is not None:
+                        existing = conn.execute(
+                            "SELECT * FROM orders WHERE source='ONLINE' AND local_order_id=? "
+                            "ORDER BY id DESC LIMIT 1", (local_order_id,),
                         ).fetchone()
                     if not existing:
                         ignored += 1
@@ -3277,6 +3297,13 @@ def _sync_pos_orders_locked(payload: PosOrdersInput) -> dict[str, Any]:
                 "closed_at": order.get("closed_at"),
             }
             if existing:
+                incoming_created = str(values["created_at"]).replace("T", " ")[:19]
+                existing_created = str(existing["created_at"]).replace("T", " ")[:19]
+                if order.get("created_at") and incoming_created != existing_created:
+                    raise HTTPException(status_code=409, detail=(
+                        "رقم فاتورة الكاشير مستخدم لطلب آخر. استخدم قاعدة بيانات جهاز الكاشير الأصلية؛ "
+                        "لم يتم استبدال الطلب الموجود."
+                    ))
                 # The server owns canonical timestamps. A local POS copy may be
                 # converted to Cairo time and must never overwrite them.
                 values["created_at"] = existing["created_at"] or values["created_at"]

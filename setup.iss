@@ -6,7 +6,7 @@
 [Setup]
 AppId=Broost POS
 AppName=نظام الكاشير
-AppVersion=1.3
+AppVersion=1.4
 AppPublisher=Men3em Khaled
 DefaultDirName={userappdata}\Programs\Cashier System
 DefaultGroupName=نظام الكاشير
@@ -28,6 +28,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#ReleaseSourceDir}\*"; DestDir: "{app}"; Excludes: "broost_pos.db,backups\*,.last_backup_date,web_data\*"; Flags: recursesubdirs createallsubdirs
 Source: "{#ReleaseSourceDir}\broost_pos.db"; DestDir: "{app}"; Flags: onlyifdoesntexist skipifsourcedoesntexist
+
+[InstallDelete]
+; Old bundles could shadow Windows DLLs and prevent Qt from starting after an update.
+Type: files; Name: "{app}\_internal\icuuc.dll"
+Type: files; Name: "{app}\_internal\icuin.dll"
+Type: files; Name: "{app}\_internal\ucrtbase.dll"
+Type: files; Name: "{app}\_internal\api-ms-win-*.dll"
 
 [Icons]
 Name: "{group}\نظام الكاشير"; Filename: "{app}\CashierSystemGuard.exe"

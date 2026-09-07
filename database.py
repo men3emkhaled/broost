@@ -276,6 +276,7 @@ def init_db():
             last_error TEXT NOT NULL DEFAULT ''
         )
     """)
+    _add_column_if_missing(cursor, "pending_remote_actions", "revision", "INTEGER NOT NULL DEFAULT 0")
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_pending_remote_actions_created "
         "ON pending_remote_actions(created_at)"
@@ -323,6 +324,12 @@ def init_db():
             VALUES (OLD.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
         END
     """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_clear_deleted_order_queue AFTER DELETE ON orders BEGIN
+            DELETE FROM pos_order_sync_queue WHERE local_order_id=OLD.id;
+        END
+    """)
+    cursor.execute("DELETE FROM pos_order_sync_queue WHERE local_order_id NOT IN (SELECT id FROM orders)")
     cursor.execute(
         "UPDATE orders SET online_status='PREPARING' "
         "WHERE source='ONLINE' AND online_status='ACCEPTED'"
@@ -368,19 +375,10 @@ def init_db():
     
     conn.commit()
     
-    # Seed default configurations & passwords
-    cursor.execute("SELECT COUNT(*) FROM settings")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("app_password", "9999"))
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("delete_password", "9999"))
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("printer_online", "1"))
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("delivery_fee", "15"))
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("cashier_1_name", "DR OMAR"))
-        cursor.execute("INSERT INTO settings VALUES (?, ?)", ("cashier_1_pin", "1111"))
-        conn.commit()
-
     # Migrate: ensure cashier settings and printer settings exist in older DBs
-    for key, val in [("cashier_1_name", "DR OMAR"), ("cashier_1_pin", "1111"),
+    for key, val in [("app_password", "9999"), ("delete_password", "9999"),
+                     ("printer_online", "1"), ("delivery_fee", "15"),
+                     ("cashier_1_name", "DR OMAR"), ("cashier_1_pin", "1111"),
                      ("printer_paper_width", "80"), ("printer_font_size", "normal"),
                      ("selected_printer", ""),
                      ("master_password", "9999"),

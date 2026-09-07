@@ -158,6 +158,86 @@ class BroostEndToEndTest(unittest.TestCase):
             raw = response.read()
             return json.loads(raw.decode("utf-8")) if raw else {}
 
+    def test_admin_cancellation_reaches_pos_and_reverses_cash_once(self):
+        from core.order_finance import reconcile_order_finance
+        conn = database.get_connection()
+        try:
+            shift = conn.execute("INSERT INTO shifts (cashier_name, expected_cash) VALUES ('audit', 0)").lastrowid
+            local_id = conn.execute(
+                "INSERT INTO orders (shift_id, channel, source, status, payment_method, subtotal, total, created_at) "
+                "VALUES (?, 'CASHIER', 'POS', 'PENDING', 'CASH', 50, 50, '2026-09-07 12:00:00')", (shift,),
+            ).lastrowid
+            reconcile_order_finance(conn, local_id)
+            conn.commit()
+        finally:
+            conn.close()
+        manager = OnlineSyncManager()
+        manager._push_pos_orders()
+        remote = next(o for o in self.request('/api/admin/orders?source=POS', admin=True) if o['local_order_id'] == local_id)
+        self.request(f"/api/admin/orders/{remote['id']}", 'PATCH', {'status': 'READY'}, admin=True)
+        manager._pull_events()
+        self.assertEqual(next(o for o in manager._orders_for_sync(False) if o['local_order_id'] == local_id)['status'], 'READY')
+        manager._push_pos_orders()
+        self.request(f"/api/admin/orders/{remote['id']}", 'PATCH', {'status': 'CANCELLED'}, admin=True)
+        manager._pull_events()
+        manager._set_setting('web_last_event_id', '0')
+        manager._pull_events()
+        conn = database.get_connection()
+        try:
+            self.assertEqual(conn.execute('SELECT status FROM orders WHERE id=?', (local_id,)).fetchone()[0], 'CANCELLED')
+            self.assertEqual(conn.execute('SELECT expected_cash FROM shifts WHERE id=?', (shift,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_business_day_filters_use_cairo_for_pos_and_utc_for_online(self):
+        cases = [
+            (890101, 'POS', '2026-09-06 07:59:59', False),
+            (890102, 'POS', '2026-09-06 08:00:00', True),
+            (890103, 'ONLINE', '2026-09-06T04:59:59Z', False),
+            (890104, 'ONLINE', '2026-09-06T05:00:00Z', True),
+            (890105, 'POS', '2026-09-07 07:59:59', True),
+            (890106, 'POS', '2026-09-07 08:00:00', False),
+            (890107, 'ONLINE', '2026-09-07T04:59:59Z', True),
+            (890108, 'ONLINE', '2026-09-07T05:00:00Z', False),
+        ]
+        self.request('/api/sync/pos-orders', 'POST', {'orders': [
+            {'local_order_id': local_id, 'status': 'COMPLETED', 'created_at': stamp, 'items': [], 'total': 0}
+            for local_id, _, stamp, _ in cases
+        ]}, sync=True)
+        conn = sqlite3.connect(self.temp_path / 'web/broost_web.db')
+        try:
+            for local_id, source, _, _ in cases:
+                conn.execute('UPDATE orders SET source=? WHERE local_order_id=?', (source, local_id))
+            conn.commit()
+        finally:
+            conn.close()
+        fixture_ids = {c[0] for c in cases}
+        expected = {c[0] for c in cases if c[3]}
+        for query in ('date_from=2026-09-06&date_to=2026-09-06',
+                      'date_from=2026-09-06T05:00:00Z&date_to=2026-09-07T05:00:00Z'):
+            actual = {o['local_order_id'] for o in self.request('/api/admin/orders?' + query, admin=True)}
+            self.assertEqual(actual & fixture_ids, expected)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/admin/orders?date_from=invalid', admin=True)
+        self.assertEqual(error.exception.code, 422)
+
+    def test_conflicting_fresh_pos_database_cannot_overwrite_an_existing_invoice(self):
+        payload = {'local_order_id': 890201, 'status': 'COMPLETED', 'created_at': '2026-09-06 12:00:00', 'total': 100, 'items': []}
+        self.request('/api/sync/pos-orders', 'POST', {'orders': [payload]}, sync=True)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/sync/pos-orders', 'POST', {'orders': [{**payload, 'created_at': '2026-09-07 12:00:00', 'total': 900}]}, sync=True)
+        self.assertEqual(error.exception.code, 409)
+        existing = next(o for o in self.request('/api/admin/orders?source=POS', admin=True) if o['local_order_id'] == 890201)
+        self.assertEqual(existing['total'], 100)
+
+    def test_orphan_online_order_never_becomes_a_new_pos_invoice(self):
+        result = self.request('/api/sync/pos-orders', 'POST', {'orders': [{
+            'source': 'ONLINE', 'local_order_id': 890301, 'public_number': 'missing-online-order',
+            'remote_id': None, 'status': 'COMPLETED', 'total': 100, 'items': [],
+        }]}, sync=True)
+        self.assertEqual(result['ignored'], 1)
+        self.assertFalse(any(o['local_order_id'] == 890301 for o in self.request('/api/admin/orders', admin=True)))
+
     def test_connection_check_reports_server_key_and_sync_separately(self):
         base_url = f"http://127.0.0.1:{self.port}"
         web_db = self.temp_path / "web" / "broost_web.db"

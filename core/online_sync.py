@@ -142,6 +142,8 @@ class OnlineSyncManager(QObject):
         """Instantly push local POS orders to the web server without waiting for poll locks."""
         def worker():
             try:
+                if self._setting("web_sync_enabled", "0") != "1":
+                    return
                 self._push_pos_orders()
             except Exception as exc:
                 log_network_error(
@@ -209,7 +211,7 @@ class OnlineSyncManager(QObject):
                 "ON CONFLICT(action_key) DO UPDATE SET "
                 "action_type=excluded.action_type, changes_json=excluded.changes_json, "
                 "context_json=excluded.context_json, created_at=CURRENT_TIMESTAMP, "
-                "attempts=0, last_error=''",
+                "attempts=0, last_error='', revision=pending_remote_actions.revision+1",
                 (
                     action_key, action_type, int(remote_id),
                     json.dumps(changes, ensure_ascii=False),
@@ -238,13 +240,13 @@ class OnlineSyncManager(QObject):
         conn = database.get_connection()
         try:
             rows = conn.execute(
-                "SELECT action_key, action_type, remote_id, changes_json, context_json "
+                "SELECT action_key, action_type, remote_id, changes_json, context_json, revision "
                 "FROM pending_remote_actions ORDER BY created_at LIMIT 20"
             ).fetchall()
         finally:
             conn.close()
 
-        for action_key, action_type, remote_id, changes_json, context_json in rows:
+        for action_key, action_type, remote_id, changes_json, context_json, revision in rows:
             try:
                 changes = json.loads(changes_json or "{}")
                 context = json.loads(context_json or "{}")
@@ -257,23 +259,22 @@ class OnlineSyncManager(QObject):
                 if not self.is_queueable_error(exc):
                     conn = database.get_connection()
                     try:
-                        conn.execute(
-                            "DELETE FROM pending_remote_actions WHERE action_key=?",
-                            (action_key,),
-                        )
+                        removed = conn.execute(
+                            "DELETE FROM pending_remote_actions WHERE action_key=? AND revision=?",
+                            (action_key, revision),
+                        ).rowcount
                         conn.commit()
                     finally:
                         conn.close()
-                    self.queued_action_failed.emit(
-                        str(action_type), dict(context), str(exc)
-                    )
+                    if removed:
+                        self.queued_action_failed.emit(str(action_type), dict(context), str(exc))
                     continue
                 conn = database.get_connection()
                 try:
                     conn.execute(
                         "UPDATE pending_remote_actions SET attempts=attempts+1, last_error=? "
-                        "WHERE action_key=?",
-                        (str(exc)[:500], action_key),
+                        "WHERE action_key=? AND revision=?",
+                        (str(exc)[:500], action_key, revision),
                     )
                     conn.commit()
                 finally:
@@ -282,14 +283,15 @@ class OnlineSyncManager(QObject):
 
             conn = database.get_connection()
             try:
-                conn.execute(
-                    "DELETE FROM pending_remote_actions WHERE action_key=?",
-                    (action_key,),
-                )
+                removed = conn.execute(
+                    "DELETE FROM pending_remote_actions WHERE action_key=? AND revision=?",
+                    (action_key, revision),
+                ).rowcount
                 conn.commit()
             finally:
                 conn.close()
-            self.queued_action_completed.emit(str(action_type), dict(context))
+            if removed:
+                self.queued_action_completed.emit(str(action_type), dict(context))
 
         remaining = self.pending_remote_action_count()
         self.queue_changed.emit(remaining)
@@ -901,12 +903,16 @@ class OnlineSyncManager(QObject):
         events = result.get("events", [])
         latest_by_order: dict[int, dict[str, Any]] = {}
         for event in events:
-            if event.get("order") and event["order"].get("source") == "ONLINE":
+            if event.get("order") and event["order"].get("source") in ("ONLINE", "POS"):
                 latest_by_order[int(event["order_id"])] = event
 
         for event in latest_by_order.values():
             order = event["order"]
             order["_event_type"] = event.get("event_type", "")
+            if order.get("source") == "POS":
+                if self._apply_pos_order_event(order):
+                    self.order_updated.emit(order)
+                continue
             was_new = self._import_online_order(order)
             if order.get("has_payment_proof"):
                 try:
@@ -939,12 +945,53 @@ class OnlineSyncManager(QObject):
             "CANCELLED": "CANCELLED",
         }.get(remote_status, "PENDING")
 
+    def _apply_pos_order_event(self, order: dict[str, Any]) -> bool:
+        """Apply admin changes to the existing cashier invoice and its balances."""
+        local_id = order.get("local_order_id")
+        if not local_id:
+            return False
+        conn = database.get_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, created_at FROM orders WHERE id=? AND source='POS'", (local_id,)
+            ).fetchone()
+            if not row or str(row[1])[:19] != str(order.get("created_at", "")).replace("T", " ")[:19]:
+                return False
+            remote_status = str(order.get("status") or "")
+            status = self._local_status(remote_status)
+            if row[0] == "CANCELLED" and status != "CANCELLED":
+                return False
+            if row[0] == "COMPLETED" and status not in ("COMPLETED", "CANCELLED"):
+                return False
+            conn.execute(
+                "UPDATE orders SET status=?, online_status=?, payment_status=?, closed_at=? WHERE id=?",
+                (status, remote_status, order.get("payment_status"),
+                 self._local_timestamp(order.get("closed_at")), local_id),
+            )
+            reconcile_order_finance(conn, local_id, fallback_shift_id=config.ACTIVE_SHIFT_ID)
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
     def _import_online_order(self, order: dict[str, Any]) -> bool:
         conn = database.get_connection()
         conn.row_factory = __import__("sqlite3").Row
         try:
             cursor = conn.cursor()
-            existing = cursor.execute("SELECT id FROM orders WHERE remote_id=?", (order["id"],)).fetchone()
+            # Numeric remote IDs can be reused after a backend restore.
+            public_number = str(order.get("public_number") or "")
+            existing = cursor.execute(
+                "SELECT id, public_number FROM orders WHERE source='ONLINE' AND remote_id=?", (order["id"],)
+            ).fetchone()
+            if existing and public_number and existing["public_number"] != public_number:
+                cursor.execute("UPDATE orders SET remote_id=NULL WHERE id=?", (existing["id"],))
+                existing = None
+            if not existing and public_number:
+                existing = cursor.execute(
+                    "SELECT id FROM orders WHERE source='ONLINE' AND public_number=?", (public_number,)
+                ).fetchone()
             was_new = existing is None
             address = strip_area_prefix(order.get("detailed_address"), order.get("area_name"))
             phone = (order.get("customer_phone") or "").strip()
@@ -1103,6 +1150,8 @@ class OnlineSyncManager(QObject):
                         "COMPLETED": "COMPLETED",
                         "CANCELLED": "CANCELLED",
                     }.get(row["status"], "NEW")
+                    if row["status"] == "PENDING" and online_status == "READY":
+                        remote_status = "READY"
                 fulfillment = "DELIVERY" if row["channel"] == "DELIVERY" else "PICKUP"
                 payment_status = row["payment_status"]
                 if not payment_status:
@@ -1142,6 +1191,7 @@ class OnlineSyncManager(QObject):
                         "extras": extras,
                     })
                 result.append({
+                    "source": source,
                     "_sync_queue_token": row["sync_queue_token"],
                     "remote_id": row["remote_id"],
                     "local_order_id": row["id"],

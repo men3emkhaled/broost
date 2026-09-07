@@ -38,7 +38,7 @@ from dialogs.online_order import OnlineOrderAlertDialog, CustomerCancelledOrderA
 from dialogs.daily_offers import DailyOffersDialog
 from dialogs.customers import CustomersAdminDialog
 from core.online_sync import OnlineSyncManager
-from core.order_finance import cancel_and_reconcile, reconcile_order_finance
+from core.order_finance import cancel_and_reconcile, reconcile_order_finance, validate_invoice_amounts
 
 
 class ExitOptionsDialog(QDialog):
@@ -2872,6 +2872,15 @@ class MainPOSDashboard(QMainWindow):
         self.hide_keyboard()
         if not self.cart_items:
             QMessageBox.warning(self, "السلة فارغة", "يرجى إضافة وجبات إلى السلة لإتمام الدفع.")
+            return
+
+        try:
+            subtotal_check = sum(item["price"] * item["qty"] for item in self.cart_items)
+            discount_check = float(self.discount_input.text().strip() or "0") if hasattr(self, 'discount_input') else 0.0
+            paid_check = float(self.paid_input.text().strip() or "0") if self.payment_method == "cash" and self.active_channel != "delivery" else None
+            validate_invoice_amounts(subtotal_check, 0.0, discount_check, paid_check)
+        except (ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "راجع مبالغ الفاتورة", str(exc))
             return
             
         # Warning alert if delivery address details are missing

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 import database
 from core.display_text import pos_text
-from core.order_finance import reconcile_order_finance
+from core.order_finance import reconcile_order_finance, validate_invoice_amounts
 from styles import STYLE_SHEET
 from dialogs.receipt import ReceiptSimDialog
 
@@ -553,13 +553,24 @@ class OrderEditDialog(QDialog):
         try:
             discount = float(self.txt_discount.text().strip()) if self.txt_discount.text().strip() else 0.0
         except ValueError:
-            discount = 0.0
-        grand_total = max(0.0, subtotal + self.delivery_fee - discount)
+            QMessageBox.warning(self, "راجع الخصم", "اكتب قيمة خصم صحيحة.")
+            return
+        try:
+            grand_total = validate_invoice_amounts(subtotal, self.delivery_fee, discount)
+        except ValueError as exc:
+            QMessageBox.warning(self, "راجع مبالغ الفاتورة", str(exc))
+            return
 
         try:
             paid = float(self.txt_paid.text().strip())
         except ValueError:
             paid = grand_total
+        try:
+            validate_invoice_amounts(subtotal, self.delivery_fee, discount,
+                                     paid if self.payment_method == "CASH" and self.channel != "DELIVERY" else None)
+        except ValueError as exc:
+            QMessageBox.warning(self, "راجع المبلغ المدفوع", str(exc))
+            return
         change = max(0.0, paid - grand_total)
 
         conn = database.get_connection()
