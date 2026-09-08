@@ -106,9 +106,9 @@ function renderMenu() {
   // Render Category Chips
   const chipsEl = $('#categoryChips');
   if (chipsEl) {
-    chipsEl.innerHTML = `<button type="button" class="cat-chip${!selected ? ' active' : ''}" data-cat="">الكل</button>` +
-      m.categories.map(c => `<button type="button" class="cat-chip${selected === c.sync_id ? ' active' : ''}" data-cat="${esc(c.sync_id)}">${esc(c.name)}</button>`).join('') +
-      `<button type="button" class="cat-chip${selected === 'offers' ? ' active' : ''}" data-cat="offers">العروض ⭐</button>`;
+    chipsEl.innerHTML = `<button type="button" class="category-chip${!selected ? ' active' : ''}" data-cat="">الكل</button>` +
+      m.categories.map(c => `<button type="button" class="category-chip${selected === c.sync_id ? ' active' : ''}" data-cat="${esc(c.sync_id)}">${esc(c.name)}</button>`).join('') +
+      `<button type="button" class="category-chip${selected === 'offers' ? ' active' : ''}" data-cat="offers">العروض</button>`;
   }
 
   if ($('#area')) {
@@ -125,9 +125,11 @@ function renderMenu() {
 
   if ($('#products')) {
     $('#products').innerHTML = items.filter(i => i.name.includes(query)).map(i => `
-      <button type="button" class="product" data-product="${esc(i.sync_id)}" data-kind="${i.kind}">
-        <b>${esc(i.name)}</b>
-        <span>${money(i.base_price)}</span>
+      <button type="button" class="product${i.kind === 'offer' ? ' offer-card' : ''}" data-product="${esc(i.sync_id)}" data-kind="${i.kind}">
+        <div class="product-title">${esc(i.name)}</div>
+        <div class="product-footer">
+          <span class="product-price">${money(i.base_price)}</span>
+        </div>
       </button>
     `).join('') || '<p style="grid-column:1/-1;text-align:center;padding:30px;color:var(--text-muted)">لا توجد أصناف مطابقة للبحث.</p>';
   }
@@ -213,20 +215,20 @@ function renderCart() {
       <div class="line">
         <div class="line-info">
           <div class="line-title">
-            <b>${esc(i.name)}</b>
-            ${i.spicy ? '<span class="spice-badge">🌶️ حار</span>' : ''}
+            <span>${esc(i.name)}</span>
+            ${i.spicy ? '<span class="spice-tag">حار</span>' : ''}
           </div>
-          <small class="line-meta">${esc(i.size)} · ${i.quantity} × ${money(i.unit_price)}</small>
+          <div class="line-meta">${esc(i.size)} · ${i.quantity} × ${money(i.unit_price)}</div>
           <div class="line-price">${money(i.quantity * i.unit_price)}</div>
         </div>
         <div class="line-actions">
           <button type="button" class="qty-btn" data-qty-dec="${n}" ${state.pending ? 'disabled' : ''} title="تقليل">−</button>
           <span class="qty-val">${i.quantity}</span>
           <button type="button" class="qty-btn" data-qty-inc="${n}" ${state.pending ? 'disabled' : ''} title="زيادة">+</button>
-          <button type="button" class="del-btn" data-remove="${n}" ${state.pending ? 'disabled' : ''} title="حذف الصنف">🗑️</button>
+          <button type="button" class="del-btn" data-remove="${n}" ${state.pending ? 'disabled' : ''}>حذف</button>
         </div>
       </div>
-    `).join('') || '<p>السلة فارغة. اضغط على الأصناف لإضافتها.</p>';
+    `).join('') || '<p style="text-align:center;padding:24px 10px;color:var(--text-muted);font-size:13px">السلة فارغة. اضغط على الأصناف لإضافتها.</p>';
   }
   totals();
 }
@@ -359,7 +361,7 @@ function orderCard(o) {
       <div class="order-card-header">
         <div>
           <span class="order-card-title">#${o.id} ${esc(o.public_number ? '(' + o.public_number + ')' : '')}</span>
-          <span style="font-size:12px;color:var(--text-muted);margin-right:8px">${o.source === 'POS' ? '🏪 صالة' : '🌐 أونلاين'}</span>
+          <span class="order-card-source">${o.source === 'POS' ? 'صالة' : 'أونلاين'}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <span class="order-badge ${badgeClass}">${esc(statusNames[o.status] || o.status)}</span>
@@ -370,8 +372,8 @@ function orderCard(o) {
       <div class="order-card-body">
         <p>
           <b>${esc(o.customer_name)}</b> ${o.customer_phone ? '· ' + esc(o.customer_phone) : ''}
-          ${isDelivery ? `<br>🛵 توصيل: ${esc(o.area_name || '')} ${esc(o.detailed_address || '')}` : '<br>🍽️ صالة / سفري'}
-          ${o.notes ? `<br><small style="color:#fbbf24">ملاحظة: ${esc(o.notes)}</small>` : ''}
+          ${isDelivery ? `<br>توصيل: ${esc(o.area_name || '')} ${esc(o.detailed_address || '')}` : '<br>صالة / سفري'}
+          ${o.notes ? `<br><small style="color:var(--accent-amber)">ملاحظة: ${esc(o.notes)}</small>` : ''}
         </p>
         <div class="order-items-snippet">
           ${o.items.map(i => `${i.quantity} × ${esc(i.item_name)}${i.size_name ? ' (' + esc(i.size_name) + ')' : ''}`).join(' · ')}
@@ -379,14 +381,14 @@ function orderCard(o) {
       </div>
 
       <div class="order-card-actions">
-        <button type="button" data-receipt="${o.id}">🖨️ طباعة</button>
-        ${canEdit ? `<button type="button" class="btn-edit" data-edit="${o.id}">✏️ تعديل الطلب</button>` : ''}
-        ${o.has_payment_proof ? `<button type="button" data-proof="${o.id}">📷 إثبات التحويل</button>` : ''}
-        ${o.status === 'NEW' ? `<button type="button" data-status="PREPARING" data-id="${o.id}">👨‍🍳 قبول وتجهيز</button>` : ''}
-        ${o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">🔔 جاهز للاستلام</button>` : ''}
-        ${['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">🛵 خروج للتوصيل</button>` : ''}
-        ${(o.status === 'DISPATCHED' || (!isDelivery && ['PREPARING', 'READY'].includes(o.status))) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">✅ تم التسليم</button>` : ''}
-        ${o.status !== 'CANCELLED' ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#f87171">✕ إلغاء</button>` : ''}
+        <button type="button" data-receipt="${o.id}">طباعة</button>
+        ${canEdit ? `<button type="button" class="btn-edit" data-edit="${o.id}">تعديل الطلب</button>` : ''}
+        ${o.has_payment_proof ? `<button type="button" data-proof="${o.id}">إثبات التحويل</button>` : ''}
+        ${o.status === 'NEW' ? `<button type="button" data-status="PREPARING" data-id="${o.id}">قبول وتجهيز</button>` : ''}
+        ${o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">جاهز للاستلام</button>` : ''}
+        ${['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">خروج للتوصيل</button>` : ''}
+        ${(o.status === 'DISPATCHED' || (!isDelivery && ['PREPARING', 'READY'].includes(o.status))) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">تم التسليم</button>` : ''}
+        ${o.status !== 'CANCELLED' ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
       </div>
     </article>
   `;
@@ -468,7 +470,7 @@ async function changeStatus(id, status) {
   // Delivery status changed without asking for drivers!
   if (status === 'DISPATCHED') {
     await api('/api/pos/orders/' + id, 'PATCH', { status });
-    notice(`تم تغيير حالة الطلب #${id} إلى: خرج للتوصيل 🛵`);
+    notice(`تم تغيير حالة الطلب #${id} إلى: خرج للتوصيل`);
     await refresh();
     await loadHistory();
     return;
@@ -540,7 +542,7 @@ async function editOrder(order) {
   document.querySelectorAll('nav [data-tab]').forEach(t => { t.classList.toggle('active', t.dataset.tab === 'sale'); });
   renderCart();
   syncSegmented();
-  notice(`✏️ أنت الآن في وضع تعديل الفاتورة #${order.id} — يمكنك إضافة أو حذف أصناف ثم حفظ الفاتورة.`);
+  notice(`أنت الآن في وضع تعديل الفاتورة #${order.id} — يمكنك إضافة أو حذف أصناف ثم حفظ الفاتورة.`);
 }
 
 function renderAccounts() {

@@ -11,37 +11,37 @@
   <link rel="stylesheet" href="/assets/pos.css">
 </head>
 <body>
-  <!-- Header -->
+  <!-- Top App Navigation -->
   <header class="app-header">
     <div class="brand">
-      <div class="brand-badge">🍗</div>
+      <img src="/logo.ico" alt="بروست" class="brand-logo" width="34" height="34">
       <div class="brand-info">
-        <strong>بروست</strong>
-        <small id="shiftBadge">الكاشير السحابي</small>
+        <strong class="brand-title">بروست</strong>
+        <span id="shiftBadge" class="brand-status">الكاشير السحابي</span>
       </div>
     </div>
     <div class="header-status">
-      <span id="connection" class="online"><span class="dot"></span> متصل بالسيرفر</span>
+      <span id="connection" class="online"><span class="dot"></span> متصل</span>
     </div>
     <nav class="main-nav">
-      <button data-tab="sale" class="nav-btn active"><span class="nav-icon">🛒</span> طلب جديد</button>
-      <button data-tab="activeTab" class="nav-btn live-orders-btn"><span class="nav-icon">⚡</span> الطلبات الجارية <span id="activeBadge" class="badge-count">0</span></button>
-      <button data-tab="orders" class="nav-btn"><span class="nav-icon">📋</span> سجل الفواتير</button>
-      <button data-tab="accounts" class="nav-btn"><span class="nav-icon">💼</span> إدارة الوردية</button>
-      <button id="admin" class="nav-btn nav-secondary"><span class="nav-icon">📊</span> الإدارة</button>
-      <button id="logout" class="nav-btn nav-danger"><span class="nav-icon">🚪</span> خروج</button>
+      <button data-tab="sale" class="nav-btn active">طلب جديد</button>
+      <button data-tab="activeTab" class="nav-btn live-orders-btn">الطلبات الجارية <span id="activeBadge" class="badge-count">0</span></button>
+      <button data-tab="orders" class="nav-btn">سجل الفواتير</button>
+      <button data-tab="accounts" class="nav-btn">الوردية والخزينة</button>
+      <button id="admin" class="nav-btn nav-secondary">الإدارة</button>
+      <button id="logout" class="nav-btn nav-danger">خروج</button>
     </nav>
   </header>
 
   <!-- Notification Toast -->
   <div id="notice" role="status" hidden></div>
 
-  <!-- Tab 1: New Sale (الطلب والمنيو) -->
+  <!-- Tab 1: New Sale -->
   <main id="sale" class="tab">
     <section class="menu-section">
       <div class="toolbar">
         <div class="search-box">
-          <span class="search-icon">🔍</span>
+          <span class="search-label">بحث:</span>
           <input id="search" placeholder="ابحث باسم الوجبة أو الصنف..." autocomplete="off">
           <button type="button" id="clearSearch" class="clear-btn" hidden>×</button>
         </div>
@@ -54,28 +54,29 @@
     <aside class="cart-section">
       <div id="editBanner" class="edit-banner" hidden>
         <div class="edit-banner-content">
-          <span>✏️ جاري تعديل الفاتورة <strong id="editOrderId">#0</strong></span>
+          <span>تعديل الفاتورة <strong id="editOrderId">#0</strong></span>
           <button type="button" id="cancelEdit" class="btn-cancel-edit">إلغاء التعديل</button>
         </div>
       </div>
+
       <div class="cart-header">
         <div class="cart-title-wrap">
           <h2 id="cartTitle">الفاتورة الحالية</h2>
           <span id="cartCountBadge" class="cart-count">0 صنف</span>
         </div>
-        <button id="clearCart" type="button" class="btn-text-danger">🗑️ تفريغ السلة</button>
+        <button id="clearCart" type="button" class="btn-clear-cart">تفريغ السلة</button>
       </div>
 
       <div id="cartLines" class="cart-lines"></div>
 
       <form id="checkout" class="checkout-form">
-        <div class="form-section-title">خيارات الاستلام والدفع</div>
+        <div class="form-section-title">بيانات الفاتورة والدفع</div>
         
         <div class="segmented-wrap">
           <label class="segmented-label">نوع الطلب</label>
           <div class="segmented-group" id="fulfillmentPills">
-            <button type="button" class="seg-item active" data-val="PICKUP">🍽️ صالة / سفري</button>
-            <button type="button" class="seg-item" data-val="DELIVERY">🛵 دليفري</button>
+            <button type="button" class="seg-item active" data-val="PICKUP">صالة / سفري</button>
+            <button type="button" class="seg-item" data-val="DELIVERY">توصيل دليفري</button>
           </div>
           <select id="fulfillment" style="display:none"><option value="PICKUP">صالة / تيك أواي</option><option value="DELIVERY">دليفري</option></select>
         </div>
@@ -83,9 +84,9 @@
         <div class="segmented-wrap">
           <label class="segmented-label">طريقة الدفع</label>
           <div class="segmented-group" id="paymentPills">
-            <button type="button" class="seg-item active" data-val="CASH">💵 نقدي</button>
-            <button type="button" class="seg-item" data-val="VISA">💳 فيزا</button>
-            <button type="button" class="seg-item" data-val="WALLET">📱 محفظة</button>
+            <button type="button" class="seg-item active" data-val="CASH">نقدي</button>
+            <button type="button" class="seg-item" data-val="VISA">فيزا</button>
+            <button type="button" class="seg-item" data-val="WALLET">محفظة</button>
           </div>
           <select id="payment" style="display:none"><option value="CASH">نقدي</option><option value="WALLET">محفظة — تم الاستلام</option><option value="VISA">فيزا — تم الاستلام</option></select>
         </div>
@@ -96,10 +97,10 @@
             <input id="customerName" placeholder="عميل المطعم" maxlength="120">
           </div>
           <div class="field-group">
-            <label for="phone">الموبايل</label>
+            <label for="phone">رقم الموبايل</label>
             <div class="input-action-wrap">
               <input id="phone" dir="ltr" placeholder="01xxxxxxxxx" maxlength="30">
-              <button id="lookup" type="button" class="btn-action-sm" title="بحث في سجل العملاء">🔍 بحث</button>
+              <button id="lookup" type="button" class="btn-action-sm">بحث</button>
             </div>
           </div>
           <div class="field-group wide" id="areaLabel" hidden>
@@ -133,56 +134,56 @@
     </aside>
   </main>
 
-  <!-- Tab 2: Active Orders (الطلبات الجارية) -->
+  <!-- Tab 2: Active Orders -->
   <main id="activeTab" class="tab" hidden>
     <div class="tab-header">
       <div>
-        <h2>⚡ الطلبات الجارية قيد العمل</h2>
+        <h2>الطلبات الجارية قيد العمل</h2>
         <p class="subtitle">متابعة فورية للطلبات الجارية وتحديث مراحل التجهيز والتسليم والتعديل</p>
       </div>
       <div class="tab-actions">
-        <button id="refreshActive" class="btn-secondary">🔄 تحديث</button>
+        <button id="refreshActive" class="btn-secondary">تحديث</button>
       </div>
     </div>
     <div id="activeOrders" class="order-grid"></div>
   </main>
 
-  <!-- Tab 3: History & Closed Orders (سجل الفواتير) -->
+  <!-- Tab 3: History & Closed Orders -->
   <main id="orders" class="tab" hidden>
     <div class="tab-header">
       <div>
-        <h2>📋 سجل الفواتير والطلبات السابقة</h2>
-        <p class="subtitle">أرشيف الفواتير المكتملة وإعادة الطباعة والتعديل</p>
+        <h2>سجل الفواتير</h2>
+        <p class="subtitle">أرشيف الفواتير السابقة وإعادة الطباعة والتعديل</p>
       </div>
       <div class="tab-actions">
-        <button id="refreshOrders" class="btn-secondary">🔄 تحديث</button>
-        <button id="previous" class="btn-secondary">▶ الأحدث</button>
-        <button id="next" class="btn-secondary">◀ الأقدم</button>
+        <button id="refreshOrders" class="btn-secondary">تحديث</button>
+        <button id="previous" class="btn-secondary">الأحدث</button>
+        <button id="next" class="btn-secondary">الأقدم</button>
       </div>
     </div>
     <div id="history" class="order-grid"></div>
   </main>
 
-  <!-- Tab 4: Shift & Accounts (إدارة الوردية والخزينة) -->
+  <!-- Tab 4: Shift & Accounts -->
   <main id="accounts" class="tab" hidden>
     <div class="accounts-container">
       <section class="panel shift-current-panel">
         <div class="panel-header">
           <div>
-            <h2>💼 الوردية الحالية والخزينة</h2>
-            <p class="subtitle">متابعة إيرادات الوردية الحالية، النقدية المتوقعة وتسجيل المصروفات والإيداعات</p>
+            <h2>الوردية الحالية والخزينة</h2>
+            <p class="subtitle">متابعة إيرادات الوردية الحالية، النقدية المتوقعة، وتسجيل المصروفات والإيداعات</p>
           </div>
           <div class="shift-actions">
-            <button id="openShift" class="btn-shift-open">🟢 فتح وردية</button>
-            <button id="movement" class="btn-shift-movement">💸 مصروف / إيداع</button>
-            <button id="closeShift" class="btn-shift-close">🔒 إغلاق الوردية</button>
+            <button id="openShift" class="btn-shift-open">فتح وردية</button>
+            <button id="movement" class="btn-shift-movement">مصروف / إيداع</button>
+            <button id="closeShift" class="btn-shift-close">إغلاق الوردية</button>
           </div>
         </div>
         <div id="shift" class="shift-metrics"></div>
       </section>
 
       <section class="panel shift-history-panel">
-        <h2>📊 سجل الورديات السابقة</h2>
+        <h2>سجل الورديات السابقة</h2>
         <div id="shifts" class="shifts-table-wrap"></div>
       </section>
     </div>
@@ -192,8 +193,8 @@
   <dialog id="login">
     <form id="loginForm" class="dialog-card">
       <div class="dialog-header">
-        <div class="dialog-logo">🍗</div>
-        <h1>أهلًا بك في بروست</h1>
+        <img src="/logo.ico" alt="بروست" class="dialog-logo" width="48" height="48">
+        <h1>كاشير بروست</h1>
         <p id="loginHint">ادخل رمز الكاشير للبدء</p>
       </div>
       <div class="dialog-body">
@@ -221,7 +222,7 @@
         <div class="checkbox-row">
           <label class="custom-checkbox">
             <input id="spicy" type="checkbox">
-            <span class="chk-label">🌶️ حار (Spicy)</span>
+            <span class="chk-label">حار (Spicy)</span>
           </label>
         </div>
         <div class="field-group">
@@ -243,9 +244,9 @@
   <dialog id="receiptDialog">
     <div class="dialog-card receipt-card">
       <div class="receipt-actions-bar">
-        <button id="printReceipt" class="btn-print-customer">🖨️ طباعة العميل</button>
-        <button id="printKitchen" class="btn-print-kitchen">🍳 طباعة المطبخ</button>
-        <button data-close="receiptDialog" class="btn-close-receipt">✕ إغلاق</button>
+        <button id="printReceipt" class="btn-print-customer">طباعة العميل</button>
+        <button id="printKitchen" class="btn-print-kitchen">طباعة المطبخ</button>
+        <button data-close="receiptDialog" class="btn-close-receipt">إغلاق</button>
       </div>
       <div id="receipt" class="receipt-paper"></div>
       <small class="receipt-notice">الفاتورة محفوظة على السيرفر سحابياً</small>
