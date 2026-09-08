@@ -69,7 +69,7 @@ LOYALTY_REWARD_MAX_SUBTOTAL = Decimal("150")
 LOYALTY_REWARD_CODE_VALUE = Decimal("150")
 POS_HEARTBEAT_TIMEOUT_SECONDS = 30
 ORDER_ACCEPTANCE_TIMEOUT_MINUTES = 30
-APP_RELEASE = "2026-09-08-fresh-start-v1"
+APP_RELEASE = "2026-09-08-cloud-pos-v1"
 WEB_SCHEMA_VERSION = "2026-08-26-v2"
 
 ORDER_STATUS_TRANSITIONS = {
@@ -180,6 +180,8 @@ def init_web_db() -> None:
                     version_row and version_row["value"] == WEB_SCHEMA_VERSION
                 )
         if schema_is_current:
+            from webapp.cloud_pos import init_cloud_schema
+            init_cloud_schema(conn)
             # Hosted startup should normally be read-light and lock-free. DDL,
             # indexes and historical loyalty repair only run after an explicit
             # schema-version bump, not on every Railway restart.
@@ -512,6 +514,8 @@ def init_web_db() -> None:
         ).fetchall()
         for loyalty_order in loyalty_order_ids:
             reconcile_order_loyalty(conn, loyalty_order["id"])
+        from webapp.cloud_pos import init_cloud_schema
+        init_cloud_schema(conn)
         set_setting(conn, "web_schema_version", WEB_SCHEMA_VERSION)
 
     if getattr(sys, 'frozen', False) and not USING_POSTGRES:
@@ -573,6 +577,10 @@ def loyalty_profile(conn: sqlite3.Connection, phone: str | None) -> dict[str, An
 
 def cashier_is_online(conn: sqlite3.Connection) -> bool:
     """Treat the hosted restaurant as open only while the desktop is checking in."""
+    if setting(conn, "cloud_pos_only", "0") == "1":
+        from webapp.cloud_pos import active_shift
+        if not active_shift(conn):
+            return False
     if APP_ENV != "production":
         return True
     last_seen = setting(conn, "pos_last_seen_at", "")
@@ -1420,7 +1428,7 @@ app.add_middleware(
     ),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Admin-Key", "X-Sync-Key"],
+    allow_headers=["Content-Type", "X-Admin-Key", "X-Sync-Key", "X-Pos-Token", "X-Pos-Terminal"],
 )
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
@@ -1441,6 +1449,10 @@ _RATE_RULES = {
 async def safety_headers_and_rate_limits(request: Request, call_next):
     method = request.method.upper()
     path = request.url.path
+    if path.startswith('/api/sync/'):
+        with db_connection() as conn:
+            if setting(conn, 'cloud_pos_only', '0') == '1':
+                return JSONResponse(status_code=410,content={'detail':'المزامنة المحلية متوقفة؛ استخدم الكاشير السحابي.'})
     rule = _RATE_RULES.get((method, path))
     if not rule and method == "POST" and path.endswith("/proof"):
         rule = (10, 300)
@@ -1678,6 +1690,108 @@ def public_customer_orders(phone: str = Query(min_length=7, max_length=30)) -> d
         }
 
 
+def calculate_order_items(conn, requested_items):
+    calculated_items: list[dict[str, Any]] = []
+    subtotal = 0.0
+    for requested in requested_items:
+        if bool(requested.item_id) == bool(requested.offer_id):
+            raise HTTPException(status_code=422, detail="كل سطر طلب لازم يكون صنف أو عرض واحد")
+        if len(requested.extra_ids) != len(set(requested.extra_ids)):
+            raise HTTPException(status_code=422, detail="لا يمكن تكرار نفس الإضافة في سطر واحد")
+
+        if requested.offer_id:
+            offer = conn.execute(
+                "SELECT * FROM offers WHERE sync_id=? AND is_deleted=0 AND is_active=1",
+                (requested.offer_id,),
+            ).fetchone()
+            components = conn.execute(
+                """
+                SELECT oi.quantity, mi.sync_id, mi.name, mi.base_price,
+                       mi.is_available, mi.is_deleted
+                FROM offer_items oi
+                JOIN menu_items mi ON mi.sync_id=oi.item_sync_id
+                WHERE oi.offer_sync_id=?
+                ORDER BY oi.local_id, oi.sync_id
+                """,
+                (requested.offer_id,),
+            ).fetchall()
+            if (
+                not offer
+                or not components
+                or any(not part["is_available"] or part["is_deleted"] for part in components)
+            ):
+                raise HTTPException(status_code=409, detail="العرض لم يعد متاحًا")
+            if requested.size_id or requested.extra_ids or requested.spicy:
+                raise HTTPException(status_code=422, detail="لا يمكن تغيير مكونات العرض")
+
+            unit_price = float(offer["offer_price"])
+            component_extras = [
+                {
+                    "name": f"{int(part['quantity'])}× {part['name']}",
+                    "price": 0.0,
+                    "system_key": "offer_component",
+                }
+                for part in components
+            ]
+            subtotal += unit_price * requested.quantity
+            calculated_items.append({
+                "menu_item_sync_id": None,
+                "item_name": f"عرض: {offer['name']}",
+                "size_name": "باكدج",
+                "quantity": requested.quantity,
+                "unit_price": unit_price,
+                "extras": component_extras,
+            })
+            continue
+
+        item = conn.execute(
+            "SELECT * FROM menu_items WHERE sync_id=? AND is_deleted=0 AND is_available=1",
+            (requested.item_id,),
+        ).fetchone()
+        if not item:
+            raise HTTPException(status_code=409, detail="أحد الأصناف لم يعد متاحًا")
+
+        unit_price = float(item["base_price"])
+        size_name = "عادي"
+        if requested.size_id:
+            size = conn.execute(
+                "SELECT * FROM menu_item_sizes WHERE sync_id=? AND item_sync_id=?",
+                (requested.size_id, requested.item_id),
+            ).fetchone()
+            if not size:
+                raise HTTPException(status_code=409, detail=f"الحجم المختار غير متاح للصنف {item['name']}")
+            size_name = size["name"]
+            unit_price += float(size["price_offset"])
+
+        extras: list[dict[str, Any]] = []
+        for extra_id in requested.extra_ids:
+            extra = conn.execute(
+                "SELECT * FROM menu_item_extras WHERE sync_id=? AND item_sync_id=?",
+                (extra_id, requested.item_id),
+            ).fetchone()
+            if not extra:
+                raise HTTPException(status_code=409, detail=f"إضافة غير متاحة للصنف {item['name']}")
+            extra_price = float(extra["price"])
+            unit_price += extra_price
+            extras.append({"name": extra["name"], "price": extra_price})
+        if requested.spicy:
+            extras.append({"name": "حار", "price": 0.0, "system_key": "spicy"})
+
+        line_total = unit_price * requested.quantity
+        subtotal += line_total
+        calculated_items.append({
+            "menu_item_sync_id": item["sync_id"],
+            "item_name": item["name"],
+            "size_name": size_name,
+            "quantity": requested.quantity,
+            "unit_price": unit_price,
+            "extras": extras,
+        })
+
+    subtotal = round(subtotal, 2)
+    return calculated_items, subtotal
+
+
 @app.post("/api/orders")
 def create_order(payload: CreateOrderInput) -> JSONResponse:
     with db_connection(immediate=True) as conn:
@@ -1742,104 +1856,7 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
         if payload.payment_method == "WALLET" and not wallet_number:
             raise HTTPException(status_code=409, detail="الدفع بالمحفظة غير متاح حاليًا")
 
-        calculated_items: list[dict[str, Any]] = []
-        subtotal = 0.0
-        for requested in payload.items:
-            if bool(requested.item_id) == bool(requested.offer_id):
-                raise HTTPException(status_code=422, detail="كل سطر طلب لازم يكون صنف أو عرض واحد")
-            if len(requested.extra_ids) != len(set(requested.extra_ids)):
-                raise HTTPException(status_code=422, detail="لا يمكن تكرار نفس الإضافة في سطر واحد")
-
-            if requested.offer_id:
-                offer = conn.execute(
-                    "SELECT * FROM offers WHERE sync_id=? AND is_deleted=0 AND is_active=1",
-                    (requested.offer_id,),
-                ).fetchone()
-                components = conn.execute(
-                    """
-                    SELECT oi.quantity, mi.sync_id, mi.name, mi.base_price,
-                           mi.is_available, mi.is_deleted
-                    FROM offer_items oi
-                    JOIN menu_items mi ON mi.sync_id=oi.item_sync_id
-                    WHERE oi.offer_sync_id=?
-                    ORDER BY oi.local_id, oi.sync_id
-                    """,
-                    (requested.offer_id,),
-                ).fetchall()
-                if (
-                    not offer
-                    or not components
-                    or any(not part["is_available"] or part["is_deleted"] for part in components)
-                ):
-                    raise HTTPException(status_code=409, detail="العرض لم يعد متاحًا")
-                if requested.size_id or requested.extra_ids or requested.spicy:
-                    raise HTTPException(status_code=422, detail="لا يمكن تغيير مكونات العرض")
-
-                unit_price = float(offer["offer_price"])
-                component_extras = [
-                    {
-                        "name": f"{int(part['quantity'])}× {part['name']}",
-                        "price": 0.0,
-                        "system_key": "offer_component",
-                    }
-                    for part in components
-                ]
-                subtotal += unit_price * requested.quantity
-                calculated_items.append({
-                    "menu_item_sync_id": None,
-                    "item_name": f"عرض: {offer['name']}",
-                    "size_name": "باكدج",
-                    "quantity": requested.quantity,
-                    "unit_price": unit_price,
-                    "extras": component_extras,
-                })
-                continue
-
-            item = conn.execute(
-                "SELECT * FROM menu_items WHERE sync_id=? AND is_deleted=0 AND is_available=1",
-                (requested.item_id,),
-            ).fetchone()
-            if not item:
-                raise HTTPException(status_code=409, detail="أحد الأصناف لم يعد متاحًا")
-
-            unit_price = float(item["base_price"])
-            size_name = "عادي"
-            if requested.size_id:
-                size = conn.execute(
-                    "SELECT * FROM menu_item_sizes WHERE sync_id=? AND item_sync_id=?",
-                    (requested.size_id, requested.item_id),
-                ).fetchone()
-                if not size:
-                    raise HTTPException(status_code=409, detail=f"الحجم المختار غير متاح للصنف {item['name']}")
-                size_name = size["name"]
-                unit_price += float(size["price_offset"])
-
-            extras: list[dict[str, Any]] = []
-            for extra_id in requested.extra_ids:
-                extra = conn.execute(
-                    "SELECT * FROM menu_item_extras WHERE sync_id=? AND item_sync_id=?",
-                    (extra_id, requested.item_id),
-                ).fetchone()
-                if not extra:
-                    raise HTTPException(status_code=409, detail=f"إضافة غير متاحة للصنف {item['name']}")
-                extra_price = float(extra["price"])
-                unit_price += extra_price
-                extras.append({"name": extra["name"], "price": extra_price})
-            if requested.spicy:
-                extras.append({"name": "حار", "price": 0.0, "system_key": "spicy"})
-
-            line_total = unit_price * requested.quantity
-            subtotal += line_total
-            calculated_items.append({
-                "menu_item_sync_id": item["sync_id"],
-                "item_name": item["name"],
-                "size_name": size_name,
-                "quantity": requested.quantity,
-                "unit_price": unit_price,
-                "extras": extras,
-            })
-
-        subtotal = round(subtotal, 2)
+        calculated_items, subtotal = calculate_order_items(conn, payload.items)
         delivery_fee = round(delivery_fee, 2)
         discount = 0.0
         redeemed_points = 0
@@ -2177,6 +2194,7 @@ def download_admin_backup() -> JSONResponse:
         "menu_item_extras", "offers", "offer_items", "orders", "order_items",
         "order_events", "customer_issues", "customer_controls", "reviews",
         "loyalty_accounts", "reward_codes", "loyalty_transactions",
+        "pos_shifts", "pos_drivers", "pos_cash_movements", "pos_drafts", "pos_edit_requests",
     )
     with db_connection() as conn:
         payload = {
@@ -2858,6 +2876,8 @@ def update_admin_order(order_id: int, payload: OrderAdminUpdate) -> dict[str, An
     if changes.get("status") == "ACCEPTED":
         changes["status"] = "PREPARING"
     with db_connection(immediate=True) as conn:
+        from webapp.cloud_pos import lock_sales
+        lock_sales(conn)
         expire_unaccepted_orders(conn)
         existing = select_for_update(conn, "SELECT * FROM orders WHERE id=?", (order_id,))
         if not existing:
@@ -2870,6 +2890,11 @@ def update_admin_order(order_id: int, payload: OrderAdminUpdate) -> dict[str, An
             changes.pop("status", None)
 
         if changes:
+            from webapp.cloud_pos import active_shift
+            changes['pos_revision'] = existing['pos_revision'] + 1
+            shift = active_shift(conn)
+            if shift and not existing["pos_shift_id"] and requested_status in ("PREPARING", "DISPATCHED", "COMPLETED"):
+                changes["pos_shift_id"] = shift["id"]
             changes["updated_at"] = utc_now()
             if requested_status in ("COMPLETED", "CANCELLED"):
                 changes["closed_at"] = utc_now()
@@ -3138,6 +3163,9 @@ def sync_pos_orders(payload: PosOrdersInput) -> dict[str, Any]:
 
 
 def _sync_pos_orders_locked(payload: PosOrdersInput) -> dict[str, Any]:
+    with db_connection() as mode_conn:
+        if setting(mode_conn, "cloud_pos_only", "0") == "1":
+            raise HTTPException(status_code=410, detail="تم إيقاف رفع السجل المحلي؛ استخدم نسخة الكاشير السحابية.")
     synced = 0
     ignored = 0
     repaired = 0
@@ -3383,3 +3411,7 @@ async def sqlite_error_handler(_: Request, exc: sqlite3.Error) -> JSONResponse:
 async def database_error_handler(_: Request, exc: DatabaseError) -> JSONResponse:
     # Keep connection details and SQL values out of public responses.
     return JSONResponse(status_code=500, content={"detail": "تعذر الاتصال بقاعدة البيانات"})
+
+
+from webapp.cloud_pos import install_cloud_routes
+install_cloud_routes(app)

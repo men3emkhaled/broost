@@ -22,6 +22,7 @@ await mkdir(assets, { recursive: true });
 await cp(source, assets, { recursive: true });
 await cp(path.join(source, "index.html"), path.join(output, "index.html"));
 await cp(path.join(source, "admin.html"), path.join(output, "admin.html"));
+await cp(path.join(source, "pos.html"), path.join(output, "pos.html"));
 await cp(path.join(root, "logo.ico"), path.join(output, "logo.ico"));
 
 await writeFile(

@@ -131,6 +131,7 @@ webapp/data/
 *.exe
 !BroostPOS.spec
 !BroostWebServer.spec
+!BroostCloud.spec
 build/
 dist/
 release_*/
