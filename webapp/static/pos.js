@@ -91,24 +91,30 @@ async function refresh() {
   }
 }
 
+let lastRenderedCategoryVersion = null;
 function renderMenu() {
   if (!state.data?.menu) return;
   const m = state.data.menu, selected = $('#category')?.value || '', area = $('#area')?.value || '';
   
-  // Update hidden select
-  if ($('#category')) {
-    $('#category').innerHTML = '<option value="">كل الأقسام</option>' +
-      m.categories.map(c => `<option value="${esc(c.sync_id)}">${esc(c.name)}</option>`).join('') +
-      '<option value="offers">العروض</option>';
-    $('#category').value = selected;
-  }
-  
-  // Render Category Chips
-  const chipsEl = $('#categoryChips');
-  if (chipsEl) {
-    chipsEl.innerHTML = `<button type="button" class="category-chip${!selected ? ' active' : ''}" data-cat="">الكل</button>` +
-      m.categories.map(c => `<button type="button" class="category-chip${selected === c.sync_id ? ' active' : ''}" data-cat="${esc(c.sync_id)}">${esc(c.name)}</button>`).join('') +
-      `<button type="button" class="category-chip${selected === 'offers' ? ' active' : ''}" data-cat="offers">العروض</button>`;
+  // Update hidden select and chips only if categories or version changed
+  if (lastRenderedCategoryVersion !== m.version) {
+    lastRenderedCategoryVersion = m.version;
+    if ($('#category')) {
+      $('#category').innerHTML = '<option value="">كل الأقسام</option>' +
+        m.categories.map(c => `<option value="${esc(c.sync_id)}">${esc(c.name)}</option>`).join('') +
+        '<option value="offers">العروض</option>';
+      $('#category').value = selected;
+    }
+    const chipsEl = $('#categoryChips');
+    if (chipsEl) {
+      chipsEl.innerHTML = `<button type="button" class="category-chip${!selected ? ' active' : ''}" data-cat="">الكل</button>` +
+        m.categories.map(c => `<button type="button" class="category-chip${selected === c.sync_id ? ' active' : ''}" data-cat="${esc(c.sync_id)}">${esc(c.name)}</button>`).join('') +
+        `<button type="button" class="category-chip${selected === 'offers' ? ' active' : ''}" data-cat="offers">العروض</button>`;
+    }
+  } else {
+    document.querySelectorAll('.category-chip, .cat-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.cat || '') === selected);
+    });
   }
 
   if ($('#area')) {
@@ -117,6 +123,13 @@ function renderMenu() {
     $('#area').value = area;
   }
 
+  renderProducts();
+}
+
+function renderProducts() {
+  const m = state.data?.menu;
+  if (!m) return;
+  const selected = $('#category')?.value || '';
   const query = ($('#search')?.value || '').trim();
   let items = m.items.filter(i => i.is_available && (!selected || i.category_sync_id === selected)).map(i => ({ ...i, kind: 'item' }));
   if (!selected || selected === 'offers') {
@@ -141,16 +154,48 @@ function chooseItem(id, kind) {
     notice('يوجد طلب جارٍ تأكيده؛ أعد محاولة حفظه أولًا.');
     return;
   }
-  const m = state.data.menu, item = (kind === 'offer' ? m.offers : m.items).find(i => i.sync_id === id);
+  const m = state.data?.menu;
+  if (!m) return;
+  const item = (kind === 'offer' ? m.offers : m.items).find(i => i.sync_id === id);
   if (!item) return;
+
+  const sizes = kind === 'offer' ? [] : (m.sizes || []).filter(s => s.item_sync_id === id);
+  const extras = kind === 'offer' ? [] : (m.extras || []).filter(e => e.item_sync_id === id);
+
+  // If item has no sizes and no extras, add directly to cart! Instant 0ms response!
+  if (sizes.length === 0 && extras.length === 0) {
+    const existingIndex = state.cart.findIndex(c => 
+      c.item_id === (kind === 'item' ? item.sync_id : null) &&
+      c.offer_id === (kind === 'offer' ? item.sync_id : null) &&
+      !c.spicy && (!c.extra_ids || c.extra_ids.length === 0) && !c.size_id
+    );
+    if (existingIndex >= 0) {
+      state.cart[existingIndex].quantity += 1;
+    } else {
+      state.cart.push({
+        name: item.name,
+        size: 'عادي',
+        unit_price: Number(kind === 'offer' ? item.offer_price : item.base_price),
+        item_id: kind === 'item' ? item.sync_id : null,
+        offer_id: kind === 'offer' ? item.sync_id : null,
+        size_id: null,
+        extra_ids: [],
+        spicy: false,
+        quantity: 1
+      });
+    }
+    renderCart();
+    return;
+  }
+
   selectedItem = { item, kind };
   if ($('#itemName')) $('#itemName').textContent = item.name;
   if ($('#size')) {
     $('#size').innerHTML = '<option value="">عادي</option>' +
-      (kind === 'offer' ? '' : m.sizes.filter(s => s.item_sync_id === id).map(s => `<option value="${esc(s.sync_id)}">${esc(s.name)} (+${money(s.price_offset)})</option>`).join(''));
+      sizes.map(s => `<option value="${esc(s.sync_id)}">${esc(s.name)} (+${money(s.price_offset)})</option>`).join('');
   }
   if ($('#extras')) {
-    $('#extras').innerHTML = kind === 'offer' ? '' : m.extras.filter(e => e.item_sync_id === id).map(e => `
+    $('#extras').innerHTML = extras.map(e => `
       <label class="custom-checkbox">
         <input type="checkbox" value="${esc(e.sync_id)}">
         <span>${esc(e.name)} (+${money(e.price)})</span>
@@ -722,7 +767,7 @@ if ($('#admin')) {
 if ($('#search')) {
   $('#search').oninput = () => {
     if ($('#clearSearch')) $('#clearSearch').hidden = !$('#search').value;
-    if (state.data) renderMenu();
+    if (state.data) renderProducts();
   };
 }
 
@@ -730,12 +775,18 @@ if ($('#clearSearch')) {
   $('#clearSearch').onclick = () => {
     if ($('#search')) $('#search').value = '';
     $('#clearSearch').hidden = true;
-    if (state.data) renderMenu();
+    if (state.data) renderProducts();
   };
 }
 
 if ($('#category')) {
-  $('#category').onchange = () => renderMenu();
+  $('#category').onchange = () => {
+    const cat = $('#category').value;
+    document.querySelectorAll('.category-chip, .cat-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.cat || '') === cat);
+    });
+    renderProducts();
+  };
 }
 
 for (const selector of ['#fulfillment', '#area', '#discount', '#cash', '#payment']) {
@@ -743,10 +794,10 @@ for (const selector of ['#fulfillment', '#area', '#discount', '#cash', '#payment
 }
 
 if ($('#refreshOrders')) {
-  $('#refreshOrders').onclick = () => run(async () => { await refresh(); await loadHistory(); });
+  $('#refreshOrders').onclick = () => run(loadHistory);
 }
 if ($('#refreshActive')) {
-  $('#refreshActive').onclick = () => run(async () => { await refresh(); });
+  $('#refreshActive').onclick = () => run(refresh);
 }
 if ($('#previous')) {
   $('#previous').onclick = () => run(async () => { state.offset = Math.max(0, state.offset - 100); await loadHistory(); });
@@ -756,7 +807,7 @@ if ($('#next')) {
 }
 
 if ($('#printReceipt')) $('#printReceipt').onclick = () => printReceipt(false);
-if ($('#printKitchen')) $('#printKitchen').onclick = () => printReceipt(true);
+if ($('#printKitchen')) $('#printKitchen').onclick = () => printKitchen(true);
 
 if ($('#clearCart')) {
   $('#clearCart').onclick = () => run(async () => {
@@ -829,13 +880,13 @@ document.addEventListener('click', e => run(async () => {
   }
 
   // Category Chips
-  if (b.classList.contains('cat-chip')) {
-    document.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('active'));
-    b.classList.add('active');
-    if ($('#category')) {
-      $('#category').value = b.dataset.cat || '';
-      renderMenu();
-    }
+  if (b.classList.contains('category-chip') || b.classList.contains('cat-chip')) {
+    const cat = b.dataset.cat || '';
+    if ($('#category')) $('#category').value = cat;
+    document.querySelectorAll('.category-chip, .cat-chip').forEach(c => {
+      c.classList.toggle('active', (c.dataset.cat || '') === cat);
+    });
+    renderProducts();
   }
 
   // Cart Item Quantity Stepper
