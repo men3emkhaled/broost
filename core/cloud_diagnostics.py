@@ -14,7 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPSHandler, HTTPRedirectHandler
 
-VERSION = '2.1'
+VERSION = '2.1'  # Setup schema; a visual hotfix must not invalidate completed setup.
+APP_VERSION = '2.1.1'
 
 
 def connection_fingerprint(defaults):
@@ -140,7 +141,7 @@ def autostart_enabled():
 
 def safe_report(checks, connection, printer_confirmed, paper_width):
     # Allowlist only. Never serialize settings, HTTP bodies, PIN, token or key.
-    return {'app_version':VERSION,'created_at':datetime.now(timezone.utc).isoformat(),
+    return {'app_version':APP_VERSION,'created_at':datetime.now(timezone.utc).isoformat(),
             'windows':platform.version(),
             'checks':[{'name':str(r['name']),'ok':bool(r['ok']),'message':str(r['message'])} for r in checks],
             'connection_ok':bool(connection.get('ok')),'connection_result':connection.get('message','لم يُختبر'),

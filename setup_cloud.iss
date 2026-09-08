@@ -4,12 +4,12 @@
 [Setup]
 AppId=Broost POS
 AppName=بروست - الكاشير السحابي
-AppVersion=2.1
+AppVersion=2.1.1
 AppPublisher=Men3em Khaled
 DefaultDirName={userappdata}\Programs\Cashier System
 DefaultGroupName=بروست
 PrivilegesRequired=lowest
-OutputBaseFilename=BroostPOS_Cloud_2.1_Advanced
+OutputBaseFilename=BroostPOS_Cloud_2.1.1_Advanced
 SetupIconFile=logo.ico
 UninstallDisplayIcon={app}\logo.ico
 Compression=lzma2

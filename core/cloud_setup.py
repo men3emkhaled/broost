@@ -7,10 +7,11 @@ import sys
 
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QFont
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QLabel,
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QLabel,
     QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWizard, QWizardPage)
 
 from core import config
+from core.cloud_theme import apply_cloud_theme
 from core.cloud_diagnostics import (VERSION, autostart_enabled, check_connection,
     connection_fingerprint, device_checks, safe_report, set_autostart)
 
@@ -86,6 +87,7 @@ class CheckPage(QWizardPage):
 
 class SetupWizard(QWizard):
     def __init__(self, settings, defaults, settings_dir, parent=None):
+        apply_cloud_theme(QApplication.instance())
         super().__init__(parent)
         self.settings, self.defaults = settings, defaults
         self.settings_dir = Path(settings_dir)
@@ -103,9 +105,29 @@ class SetupWizard(QWizard):
         self.setButtonText(QWizard.WizardButton.BackButton, 'السابق')
         self.setButtonText(QWizard.WizardButton.FinishButton, 'حفظ وبدء التشغيل')
         self.setButtonText(QWizard.WizardButton.CancelButton, 'إغلاق التجهيز')
-        self.setStyleSheet('''QWizard { background:#f5f6f8; font-family:Tahoma; font-size:14px; }
-            QLineEdit,QComboBox { background:white; padding:8px; border:1px solid #c8ccd2; border-radius:5px; }
-            QPushButton { padding:9px 16px; } QLabel { color:#20252b; }''')
+        for button in (QWizard.WizardButton.NextButton,QWizard.WizardButton.FinishButton):
+            self.button(button).setObjectName('setupPrimary')
+        self.setStyleSheet('''
+            QWizard, QWizardPage { background:#f5f6f8; color:#20252b; font-family:Tahoma; font-size:14px; }
+            QLabel, QCheckBox { color:#20252b; background:transparent; }
+            QLineEdit,QComboBox { background:#ffffff; color:#20252b; padding:8px;
+                border:1px solid #8996a5; border-radius:5px;
+                selection-background-color:#176b46; selection-color:#ffffff; }
+            QComboBox QAbstractItemView { background:#ffffff; color:#20252b;
+                selection-background-color:#176b46; selection-color:#ffffff; }
+            QPushButton { background:#ffffff; color:#20252b; border:1px solid #8996a5;
+                border-radius:5px; padding:9px 16px; min-height:18px; }
+            QPushButton:hover { background:#e8eef4; border-color:#596574; }
+            QPushButton:pressed { background:#d5e0eb; }
+            QPushButton:focus, QLineEdit:focus, QComboBox:focus { border:2px solid #135ca8; }
+            QPushButton#setupPrimary { background:#176b46; color:#ffffff; border-color:#176b46; font-weight:bold; }
+            QPushButton#setupPrimary:hover { background:#115737; }
+            QPushButton#setupPrimary:pressed { background:#0b452a; }
+            QPushButton#setupPrimary:focus { border:2px solid #135ca8; }
+            QPushButton:disabled, QPushButton#setupPrimary:disabled { background:#e5e9ee; color:#66717f; border-color:#bdc6d0; }
+            QLineEdit:disabled, QComboBox:disabled { background:#e5e9ee; color:#66717f; }
+            QCheckBox:disabled { color:#66717f; }
+        ''')
         self.build_device_page()
         self.build_connection_page()
         self.build_printer_page()

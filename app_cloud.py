@@ -15,6 +15,7 @@ from PyQt6.QtWebChannel import QWebChannel
 from core.pos_defaults import load_pos_defaults
 from core import config
 from core.cloud_setup import SetupWizard, apply_print_settings, setup_required
+from core.cloud_theme import apply_cloud_theme
 
 
 class Printer(QObject):
@@ -140,6 +141,7 @@ class CloudWindow(QMainWindow):
 
 if __name__=='__main__':
     app=QApplication(sys.argv)
+    apply_cloud_theme(app)
     # Match the installer's mutex so two cashiers or an in-use update cannot overlap.
     mutex=None
     if sys.platform=='win32' and '--setup-smoke' not in sys.argv:

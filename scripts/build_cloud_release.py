@@ -35,7 +35,7 @@ def main():
     if not compiler.is_file():
         compiler=Path(os.getenv('ProgramFiles(x86)',''))/'Inno Setup 6/ISCC.exe'
     run(str(compiler),f'/DReleaseSourceDir={app}',f'/O{release}','setup_cloud.iss')
-    print('Cloud installer ready:',release/'BroostPOS_Cloud_2.1_Advanced.exe')
+    print('Cloud installer ready:',release/'BroostPOS_Cloud_2.1.1_Advanced.exe')
 
 
 if __name__=='__main__':main()
