@@ -49,6 +49,23 @@ class CloudPOSTests(unittest.TestCase):
         state=self.client.get('/api/pos/state',headers=self.headers).json()
         self.assertEqual(state['shift']['expected_cash'],240)
 
+    def test_installation_diagnostics_are_authenticated_and_do_not_change_sales(self):
+        self.assertEqual(self.client.get('/api/pos/diagnostics').status_code,401)
+        with s.db_connection() as conn:
+            s.set_setting(conn,'cloud_pos_only','1')
+            before=[tuple(r) for r in conn.execute('SELECT * FROM sqlite_sequence')]
+            settings_before=[tuple(r) for r in conn.execute('SELECT * FROM settings ORDER BY key')]
+        for _ in range(2):
+            response=self.client.get('/api/pos/diagnostics',headers=self.headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['menu_items'],1)
+            self.assertTrue(response.json()['cloud_only'])
+        with s.db_connection() as conn:
+            self.assertEqual([tuple(r) for r in conn.execute('SELECT * FROM sqlite_sequence')],before)
+            self.assertEqual([tuple(r) for r in conn.execute('SELECT * FROM settings ORDER BY key')],settings_before)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM orders').fetchone()[0],0)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM pos_shifts').fetchone()[0],0)
+
     def test_admin_cancellation_updates_cloud_cash_immediately_once(self):
         self.open();order=self.post('orders',self.payload).json()
         for _ in range(2):

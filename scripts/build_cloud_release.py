@@ -22,7 +22,7 @@ def main():
     release=fresh_release_directory(ROOT,args.output)
     def run(*args):subprocess.run(args,cwd=ROOT,check=True)
     if not args.skip_dependencies:
-        run(sys.executable,'-m','pip','install','PyQt6','PyQt6-WebEngine','pywin32','pyinstaller','certifi')
+        run(sys.executable,'-m','pip','install','PyQt6','PyQt6-WebEngine','pywin32','pyinstaller','certifi','qrcode')
     values=load_values(ROOT)
     values.pop('operational_reset_id',None)
     values['mode']='cloud'
@@ -35,7 +35,7 @@ def main():
     if not compiler.is_file():
         compiler=Path(os.getenv('ProgramFiles(x86)',''))/'Inno Setup 6/ISCC.exe'
     run(str(compiler),f'/DReleaseSourceDir={app}',f'/O{release}','setup_cloud.iss')
-    print('Cloud installer ready:',release/'BroostPOS_Cloud_2.0.exe')
+    print('Cloud installer ready:',release/'BroostPOS_Cloud_2.1_Advanced.exe')
 
 
 if __name__=='__main__':main()

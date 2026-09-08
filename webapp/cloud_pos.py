@@ -240,6 +240,15 @@ def install_cloud_routes(app):
         message=f'{int(time.time())+16*3600}.{secrets.token_hex(16)}'
         return {'token':message+'.'+hmac.new(secret.encode(),message.encode(),hashlib.sha256).hexdigest()}
 
+    @app.get('/api/pos/diagnostics',dependencies=[Depends(require_session)])
+    def diagnostics():
+        # Installation must not expire orders, open shifts, or consume invoice IDs.
+        with s.db_connection() as conn:
+            menu=s.read_menu(conn)
+            return {'status':'ok','time':s.utc_now(),'release':s.APP_RELEASE,
+                    'cloud_only':s.setting(conn,'cloud_pos_only','0')=='1',
+                    'menu_items':len(menu['items']),'categories':len(menu['categories'])}
+
     @app.get('/api/pos/state',dependencies=[Depends(require_session)])
     def state():
         with s.db_connection() as conn:

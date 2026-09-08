@@ -44,6 +44,8 @@ def _find_physical_printer(selected_name):
         for p in available:
             if p.printerName() == selected_name and not is_virtual_printer(p):
                 return p
+        # A missing configured printer must not silently route receipts elsewhere.
+        return None
 
     # 2. Check if default printer is physical
     default_p = QPrinterInfo.defaultPrinter()
@@ -93,11 +95,14 @@ def print_text_to_printer(text_content, parent=None):
 
         printable_width_mm = 48.0 if paper_width == 58 else 72.0
         logical_dpi = 96.0
+        font_scale = getattr(config, "PRINT_FONT_SCALE", 1.0)
+        if font_scale not in (1.0, 1.2):
+            font_scale = 1.0
         printable_width_px = (printable_width_mm * logical_dpi) / 25.4
 
         doc = QTextDocument()
         doc.setDocumentMargin(0)
-        doc.setTextWidth(printable_width_px)
+        doc.setTextWidth(printable_width_px / font_scale)
 
         stripped = text_content.strip()
         if stripped.startswith("<html>") or stripped.startswith("<html") or stripped.startswith("<!DOCTYPE html>") or "<body" in stripped:
@@ -115,12 +120,12 @@ def print_text_to_printer(text_content, parent=None):
         physical_dpi = 203.0
         physical_width_px = int(math.ceil((printable_width_mm * physical_dpi) / 25.4))
         physical_width_px = (physical_width_px + 7) // 8 * 8
-        physical_height_px = max(1, int(math.ceil((content_height_px * physical_dpi) / logical_dpi)))
+        physical_height_px = max(1, int(math.ceil((content_height_px * physical_dpi * font_scale) / logical_dpi)))
 
         image = QImage(physical_width_px, physical_height_px, QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.white)
         painter = QPainter(image)
-        painter.scale(physical_dpi / logical_dpi, physical_dpi / logical_dpi)
+        painter.scale(physical_dpi * font_scale / logical_dpi, physical_dpi * font_scale / logical_dpi)
         doc.drawContents(painter)
         painter.end()
 
