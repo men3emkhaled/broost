@@ -105,3 +105,22 @@ class SetupWizardTests(unittest.TestCase):
         with patch('PyQt6.QtPrintSupport.QPrinterInfo.availablePrinters',return_value=[]),patch('PyQt6.QtPrintSupport.QPrinterInfo.defaultPrinter') as default:
             self.assertIsNone(_find_physical_printer('Restaurant thermal'))
             default.assert_not_called()
+
+    def test_can_finish_by_skipping_printer(self):
+        self.wizard.skip_printer.setChecked(True)
+        self.assertTrue(self.wizard.printer_page.isComplete())
+        self.wizard.accept()
+        self.assertFalse(setup_required(self.settings, DEFAULTS))
+        self.assertEqual(self.settings.value('printer'), '')
+        self.assertTrue(self.settings.value('skip_printer', False, type=bool))
+
+    def test_skip_setup_checks_bypasses_setup_required(self):
+        self.settings.setValue('skip_setup_checks', True)
+        self.assertFalse(setup_required(self.settings, DEFAULTS))
+
+    def test_skip_and_start_saves_minimal_settings(self):
+        from PyQt6.QtWidgets import QMessageBox
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes):
+            self.wizard.skip_and_start()
+        self.assertFalse(setup_required(self.settings, DEFAULTS))
+        self.assertTrue(self.settings.value('skip_setup_checks', False, type=bool))

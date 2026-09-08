@@ -164,8 +164,8 @@ def create_sale(payload: SaleInput):
         original=None
         if payload.edit_order_id:
             original=s.select_for_update(conn,'SELECT * FROM orders WHERE id=?',(payload.edit_order_id,))
-            if not original or original['source']!='POS' or original['status'] not in ('PREPARING','COMPLETED') or original['pos_shift_id']!=shift['id']:
-                raise HTTPException(409,'التعديل متاح لفاتورة المطعم في الوردية الحالية قبل خروجها مع الطيار')
+            if not original or original['source']!='POS' or original['status'] not in ('PREPARING','COMPLETED','DISPATCHED') or original['pos_shift_id']!=shift['id']:
+                raise HTTPException(409,'التعديل متاح لطلبات المطعم في الوردية الحالية ما لم تكن ملغاة')
             if payload.expected_revision!=original['pos_revision']:
                 raise HTTPException(409,'الفاتورة اتغيرت؛ افتح أحدث نسخة قبل التعديل')
             if payload.fulfillment!=original['fulfillment']:
@@ -301,16 +301,12 @@ def install_cloud_routes(app):
 
     @app.patch('/api/pos/orders/{order_id}',dependencies=[Depends(require_session)])
     def status(order_id:int,payload:StatusInput):
-        # This is the same command used by the administrator, including payment
-        # transition checks, events and loyalty accounting.
         changes={'status':payload.status,'payment_status':payload.payment_status}
         with s.db_connection() as conn:
             if payload.driver_id:
                 driver=conn.execute('SELECT * FROM pos_drivers WHERE id=? AND is_active=1',(payload.driver_id,)).fetchone()
                 if not driver: raise HTTPException(404,'الطيار غير موجود')
                 changes['driver_name']=driver['name']
-            if payload.status=='DISPATCHED' and not payload.driver_id:
-                raise HTTPException(422,'اختر الطيار قبل خروج الطلب')
         return s.update_admin_order(order_id,s.OrderAdminUpdate(**changes))
 
     @app.post('/api/pos/shifts',dependencies=[Depends(require_session)])
@@ -333,8 +329,6 @@ def install_cloud_routes(app):
             if shift['closed_at']: return shift_summary(conn,shift)
             if conn.execute("SELECT id FROM orders WHERE pos_shift_id=? AND status NOT IN ('COMPLETED','CANCELLED') LIMIT 1",(shift_id,)).fetchone():
                 raise HTTPException(409,'أكمل أو ألغِ الطلبات الجارية قبل إغلاق الوردية')
-            if any(abs(d['balance'])>.005 for d in driver_balances(conn)):
-                raise HTTPException(409,'سوِّ حسابات الطيارين قبل إغلاق الوردية')
             conn.execute('UPDATE pos_shifts SET closed_at=?,actual_cash=? WHERE id=?',(s.utc_now(),payload.actual_cash,shift_id))
             s.set_setting(conn,'pos_shift_open','0')
             return shift_summary(conn,conn.execute('SELECT * FROM pos_shifts WHERE id=?',(shift_id,)).fetchone())

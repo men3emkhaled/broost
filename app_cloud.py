@@ -94,6 +94,9 @@ class CloudWindow(QMainWindow):
         QTimer.singleShot(0,self.start)
 
     def start(self):
+        if '--skip-setup' in sys.argv or '--no-setup' in sys.argv:
+            self.start_cashier()
+            return
         if setup_required(self.settings,self.defaults):
             self.run_setup()
             if not self.started:
@@ -120,6 +123,22 @@ class CloudWindow(QMainWindow):
                 self.setWindowTitle(self.settings.value('device_name','كاشير المطعم')+' — بروست السحابي')
                 if self.settings.value('fullscreen',False,type=bool):self.showFullScreen()
                 else:self.showMaximized()
+        else:
+            if not self.started:
+                reply = QMessageBox.question(
+                    self,
+                    'بدء الكاشير',
+                    'تم إغلاق معالج التجهيز.\nهل تريد تشغيل شاشة الكاشير مباشرة بدون إكمال الفحص؟',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    from core.cloud_diagnostics import VERSION, connection_fingerprint
+                    self.settings.setValue('setup_version', VERSION)
+                    self.settings.setValue('connection_fingerprint', connection_fingerprint(self.defaults))
+                    self.settings.setValue('skip_setup_checks', True)
+                    self.settings.sync()
+                    self.start_cashier()
         wizard.deleteLater()
 
     def toggle_fullscreen(self):

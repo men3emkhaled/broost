@@ -28,6 +28,8 @@ def apply_print_settings(settings):
 
 
 def setup_required(settings, defaults):
+    if settings.value('skip_setup_checks', False, type=bool):
+        return False
     return (settings.value('setup_version', '') != VERSION or
             settings.value('connection_fingerprint', '') != connection_fingerprint(defaults))
 
@@ -128,6 +130,11 @@ class SetupWizard(QWizard):
             QLineEdit:disabled, QComboBox:disabled { background:#e5e9ee; color:#66717f; }
             QCheckBox:disabled { color:#66717f; }
         ''')
+        self.setOption(QWizard.WizardOption.HaveCustomButton1, True)
+        self.setButtonText(QWizard.WizardButton.CustomButton1, 'حفظ تقرير الفحص')
+        self.setOption(QWizard.WizardOption.HaveCustomButton2, True)
+        self.setButtonText(QWizard.WizardButton.CustomButton2, 'تخطي الفحص وبدء الكاشير')
+        self.customButtonClicked.connect(self.handle_custom_button)
         self.build_device_page()
         self.build_connection_page()
         self.build_printer_page()
@@ -210,12 +217,36 @@ class SetupWizard(QWizard):
         self.print_status = self.text(self.printer_page, '')
         self.print_confirmed = QCheckBox('خرجت الورقة فعلًا، والعربية والأرقام وQR واضحين بدون قص')
         self.print_confirmed.setEnabled(False)
-        self.print_confirmed.toggled.connect(self.printer_page.set_ready)
+        self.print_confirmed.toggled.connect(self.on_print_confirmed_toggled)
         self.printer_page.layout_box.addWidget(self.print_confirmed)
+        self.skip_printer = QCheckBox('تخطي إعداد الطابعة (العمل بدون طابعة على هذا الجهاز)')
+        self.skip_printer.setStyleSheet('font-weight: bold; color: #176b46; padding-top: 8px;')
+        self.skip_printer.toggled.connect(self.on_skip_printer_toggled)
+        self.printer_page.layout_box.addWidget(self.skip_printer)
         self.printer_page.layout_box.addStretch()
         for combo in (self.printers,self.paper,self.font):
             combo.currentIndexChanged.connect(self.invalidate_print)
         self.refresh_printers(); self.addPage(self.printer_page)
+
+    def on_print_confirmed_toggled(self, checked):
+        if not (hasattr(self, 'skip_printer') and self.skip_printer.isChecked()):
+            self.printer_page.set_ready(checked)
+
+    def on_skip_printer_toggled(self, checked):
+        if checked:
+            self.print_confirmed.setChecked(False)
+            self.print_confirmed.setEnabled(False)
+            self.print_button.setEnabled(False)
+            self.printers.setEnabled(False)
+            self.paper.setEnabled(False)
+            self.font.setEnabled(False)
+            self.print_status.setText('تم اختيار العمل بدون طابعة على هذا الجهاز. يمكنك إعداد الطابعة لاحقًا في أي وقت.')
+            self.printer_page.set_ready(True)
+        else:
+            self.printers.setEnabled(True)
+            self.paper.setEnabled(True)
+            self.font.setEnabled(True)
+            self.invalidate_print()
 
     def refresh_printers(self):
         from PyQt6.QtPrintSupport import QPrinterInfo
@@ -229,11 +260,14 @@ class SetupWizard(QWizard):
         self.invalidate_print()
 
     def invalidate_print(self, *args):
+        if hasattr(self, 'skip_printer') and self.skip_printer.isChecked():
+            self.printer_page.set_ready(True)
+            return
         self.print_sent = False; self.print_confirmed.setChecked(False); self.print_confirmed.setEnabled(False)
         available = self.printers.count() > 0
         self.print_button.setEnabled(available)
         self.print_status.setText('اطبع ورقة اختبار لتأكيد هذه الإعدادات.' if available else
-                                 'لم يتم العثور على طابعة فعلية. وصل الطابعة وثبّت تعريفها ثم اضغط تحديث القائمة.')
+                                 'لم يتم العثور على طابعة فعلية. وصل الطابعة وثبّت تعريفها ثم اضغط تحديث القائمة (أو فعّل خيار تخطي الطابعة أعلاه للعمل بدون طابعة).')
 
     def send_test_print(self):
         from core.printing import print_text_to_printer
@@ -271,21 +305,70 @@ class SetupWizard(QWizard):
         self.summary_page = CheckPage('٥. نتيجة التجهيز', 'نبدأ التشغيل بعد نجاح الفحوص وتأكيد الطباعة الفعلية.')
         self.summary = self.text(self.summary_page,'')
         self.summary_page.layout_box.addStretch(); self.addPage(self.summary_page)
-        # Export remains available on failure pages, too.
-        self.setOption(QWizard.WizardOption.HaveCustomButton1, True)
-        self.setButtonText(QWizard.WizardButton.CustomButton1,'حفظ تقرير الفحص')
-        self.customButtonClicked.connect(lambda _:self.export_report())
 
     def page_changed(self, page_id):
         if self.currentPage() is self.summary_page:
-            ready = self.device_page.isComplete() and self.connection_page.isComplete() and self.printer_page.isComplete()
+            printer_ok = self.print_confirmed.isChecked() or (hasattr(self, 'skip_printer') and self.skip_printer.isChecked())
+            ready = self.device_page.isComplete() and self.connection_page.isComplete() and printer_ok
             self.summary_page.set_ready(ready)
+            if hasattr(self, 'skip_printer') and self.skip_printer.isChecked():
+                printer_status = '✓ تم تخطي إعداد الطابعة (العمل بدون طابعة)'
+                printer_info_str = 'بدون طابعة'
+            elif self.print_confirmed.isChecked():
+                printer_status = '✓ تم تأكيد الطباعة الفعلية'
+                printer_info_str = self.printers.currentText()+f' — {self.paper.currentData()} مم'
+            else:
+                printer_status = 'لم يتم تأكيد الطباعة'
+                printer_info_str = self.printers.currentText()+f' — {self.paper.currentData()} مم'
+
             self.summary.setText(('✓ جاهز للتشغيل\n\n' if ready else 'التجهيز غير مكتمل\n\n')+
                 self.connection.get('message','لم يُختبر الاتصال')+'\n\n'+
-                ('✓ تم تأكيد الطباعة الفعلية' if self.print_confirmed.isChecked() else 'لم يتم تأكيد الطباعة')+
+                printer_status+
                 '\n\nاسم الجهاز: '+self.device_name.text().strip()+
-                '\nالطابعة: '+self.printers.currentText()+f' — {self.paper.currentData()} مم'+
+                '\nالطابعة: '+printer_info_str+
                 '\n\nلا توجد فاتورة تجريبية أو تغيير في ترقيم الطلبات. سجّل دخول الكاشير لبدء العمل.')
+
+    def handle_custom_button(self, which):
+        if which == QWizard.WizardButton.CustomButton1:
+            self.export_report()
+        elif which == QWizard.WizardButton.CustomButton2:
+            self.skip_and_start()
+
+    def skip_and_start(self):
+        reply = QMessageBox.question(
+            self,
+            'تخطي الفحص والتشغيل',
+            'هل تريد تخطي معالج الفحص وتشغيل الكاشير مباشرة؟\n\n'
+            'لن يطلب النظام الفحص مجددًا عند التشغيل، ويمكنك تشغيل الفحص في أي وقت من شريط الأدوات.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.save_minimal_settings_and_accept()
+
+    def save_minimal_settings_and_accept(self):
+        try:
+            device_name = self.device_name.text().strip() if hasattr(self, 'device_name') and self.device_name.text().strip() else self.settings.value('device_name', 'كاشير المطعم')
+            values = {
+                'printer': self.settings.value('printer', ''),
+                'device_name': device_name,
+                'fullscreen': self.fullscreen.isChecked() if hasattr(self, 'fullscreen') else self.settings.value('fullscreen', False, type=bool),
+                'connection_fingerprint': connection_fingerprint(self.defaults),
+                'setup_version': VERSION,
+                'skip_setup_checks': True,
+                'skip_printer': True,
+            }
+            for key, value in values.items():
+                self.settings.setValue(key, value)
+            self.settings.sync()
+            if self.settings.status() != self.settings.Status.NoError:
+                raise OSError('settings')
+        except OSError:
+            QMessageBox.warning(self, 'حفظ الإعدادات', 'تعذر حفظ إعدادات التشغيل.')
+            return
+        apply_print_settings(self.settings)
+        super().accept()
 
     def export_report(self):
         path,_ = QFileDialog.getSaveFileName(self,'حفظ تقرير الفحص','Broost-diagnostics.json','JSON (*.json)')
@@ -297,18 +380,21 @@ class SetupWizard(QWizard):
                 QMessageBox.warning(self,'التقرير','تعذر حفظ التقرير في هذا المكان. اختر مجلدًا آخر.')
 
     def accept(self):
-        if not (self.device_page.isComplete() and self.connection_page.isComplete() and
-                self.print_sent and self.print_confirmed.isChecked()):
+        printer_ok = (self.print_sent and self.print_confirmed.isChecked()) or (hasattr(self, 'skip_printer') and self.skip_printer.isChecked())
+        if not (self.device_page.isComplete() and self.connection_page.isComplete() and printer_ok):
             return
         if not self.device_name.text().strip():
             QMessageBox.warning(self,'اسم الجهاز','أدخل اسمًا للجهاز في صفحة إعداد التشغيل.'); return
         try:
             if getattr(sys,'frozen',False):
                 set_autostart(self.autostart.isChecked())
-            values = {'printer':self.printers.currentText(),'paper_width':self.paper.currentData(),
+            is_skipped = hasattr(self, 'skip_printer') and self.skip_printer.isChecked()
+            printer_val = '' if is_skipped else self.printers.currentText()
+            values = {'printer':printer_val,'paper_width':self.paper.currentData(),
                       'font_scale':self.font.currentData(),'device_name':self.device_name.text().strip(),
                       'fullscreen':self.fullscreen.isChecked(),
-                      'connection_fingerprint':connection_fingerprint(self.defaults),'setup_version':VERSION}
+                      'connection_fingerprint':connection_fingerprint(self.defaults),'setup_version':VERSION,
+                      'skip_printer':is_skipped}
             for key,value in values.items():
                 self.settings.setValue(key,value)
             self.settings.sync()
