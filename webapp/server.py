@@ -2895,6 +2895,7 @@ def update_admin_order(order_id: int, payload: OrderAdminUpdate) -> dict[str, An
             shift = active_shift(conn)
             if shift and not existing["pos_shift_id"] and requested_status in ("PREPARING", "DISPATCHED", "COMPLETED"):
                 changes["pos_shift_id"] = shift["id"]
+                changes.setdefault('cashier_name', shift['cashier_name'])
             changes["updated_at"] = utc_now()
             if requested_status in ("COMPLETED", "CANCELLED"):
                 changes["closed_at"] = utc_now()
