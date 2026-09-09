@@ -509,9 +509,11 @@ if ($('#checkout')) {
   };
 }
 
+const QR_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJYAAACWAQAAAAAUekxPAAAB70lEQVR42rVWQWobQRCs1gh2b70f8Iz8jMAqK8iLfAisISAZAutHOTD2CvyK4B3lA7O3EUiqXHIKOgRa6WMzFD3V1dUNGCLw75gWV579c44i0szAUUTWm1eRBUx4CCSaua7I6L47cjLhLUFR5IbPeNg4IN3b8OA9VJHJ0rvoxkmSjb+rNQMAmxn9c7vpzHgLCDMaFFTDwIhwsdaXBAroAGCPs0A+TJz+0SS2LGjdTTTZiDSVyK4bjusQVsb/hmnWWYHqeH50Q5vubRoKaVJFrkpfRXfqJh9M/xUv0ww0fAa+Llv8evPJxJ+8JYQm42Eu76c90mer/q7l7lYhMYhqDbiBHwvjXMqkmrWg4jiSvNg4RZgCmRX9tsAxhmTTJDyQFayG0ncntGKu7xI0U1nQA9148WL2odzIXGOrsfuxXsAbZ+aQmhySPuG4wcadDkZNXp3zjnOYga0wYv9pcbeyaohkJlAxtnZOl/ApCFFqAO/HJbyNU/E4gELZ1seXPdzP+4uRU5m0UVTyWNwYzyt/gN3HleQOjiOtuxEegGquSjWM0Y1Wn4QPpObMYWCE4//Z3RRFSHioy248C8ItvHMOokP9+q1tkVa3uF9YUJGnLvpg3LUQZgB1j6f1l+jeDoC959Bq2MGN0V2sPb/xvWuJ39uAHDHPzrgvAAAAAElFTkSuQmCC';
+
 function receiptHtml(order, kitchen = false) {
   const isDelivery = order.fulfillment === 'DELIVERY';
-  const invoiceNumber = `#${order.id}${order.public_number ? ' (' + esc(order.public_number) + ')' : ''}`;
+  const invoiceNumber = `#${order.id}`;
 
   if (kitchen) {
     const kitchenItemsHtml = (order.items || []).map(i => {
@@ -537,56 +539,55 @@ function receiptHtml(order, kitchen = false) {
         <style>
           @media print {
             @page { margin: 0; size: 80mm auto; }
-            body { margin: 0; padding: 2px 4px; }
+            body { margin: 0; padding: 4px 6px; }
           }
           body {
             font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
             direction: rtl;
             text-align: right;
             margin: 0 auto;
-            padding: 4px;
+            padding: 6px;
             width: 72mm;
             max-width: 72mm;
             color: #000;
             background: #fff;
             font-weight: bold;
-            font-size: 11.5px;
-            line-height: 1.25;
+            font-size: 12px;
+            line-height: 1.5;
           }
           .receipt-container { width: 100%; margin: 0 auto; }
           .center { text-align: center; }
           .bold { font-weight: bold; }
-          .title { font-size: 16px; font-weight: 900; margin: 1px 0; color: #000; }
-          .subtitle { font-size: 12px; font-weight: bold; margin: 1px 0; color: #000; }
+          .title { font-size: 17px; font-weight: 900; margin: 2px 0; color: #000; }
+          .subtitle { font-size: 13px; font-weight: bold; margin: 2px 0; color: #000; }
           .kitchen-id {
             font-size: 18px;
             font-weight: 900;
             border: 2px solid #000;
-            padding: 3px 6px;
-            margin: 4px 0;
+            padding: 4px 8px;
+            margin: 6px 0;
             text-align: center;
             background: #fff;
           }
-          .kitchen-channel { font-size: 12px; font-weight: 800; margin-bottom: 2px; color: #000; }
-          .divider { border-top: 1px dashed #000; margin: 4px 0; }
-          .info-table { width: 100%; border-collapse: collapse; margin: 3px 0; font-size: 11px; }
-          .info-table td { padding: 1.5px 0; color: #000; }
-          .items-table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 12px; }
-          .items-table th { border-bottom: 1.2px solid #000; padding: 3px 0; font-weight: bold; font-size: 11.5px; color: #000; }
-          .items-table td { padding: 3px 0; vertical-align: top; color: #000; }
-          .item-row { border-bottom: 1px dashed #000; }
+          .kitchen-channel { font-size: 13px; font-weight: 800; margin-bottom: 4px; color: #000; }
+          .info-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11.5px; line-height: 1.5; }
+          .info-table td { padding: 2px 0; color: #000; }
+          .items-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+          .items-table th { border-bottom: 1.5px solid #000; padding: 4px 0; font-weight: bold; font-size: 12px; color: #000; }
+          .items-table td { padding: 5px 0; vertical-align: top; color: #000; }
           .item-qty { font-size: 15px; font-weight: 900; color: #000; }
           .item-name { font-weight: bold; }
           .spicy { color: #000; font-weight: 900; }
-          .extras { font-size: 10px; padding-right: 6px; margin-top: 1px; color: #222; }
+          .extras { font-size: 10.5px; padding-right: 6px; margin-top: 2px; color: #222; }
           .notes-box {
             border: 1.5px solid #000;
-            padding: 4px;
-            margin: 4px 0;
-            font-size: 11px;
+            padding: 6px;
+            margin: 6px 0;
+            font-size: 11.5px;
             font-weight: 900;
             background: #fff;
             text-align: right;
+            line-height: 1.4;
           }
         </style>
       </head>
@@ -598,10 +599,9 @@ function receiptHtml(order, kitchen = false) {
             <div class="kitchen-id">طلب رقم ${invoiceNumber}</div>
             <div class="kitchen-channel">${isDelivery ? 'دليفري توصيل' : 'صالة / تيك أواي'}</div>
           </div>
-          <div class="divider"></div>
           <table class="info-table">
-            <tr><td align="left" width="60%">${esc(order.created_at || '')}</td><td class="bold" align="right" width="40%">تاريخ الطلب:</td></tr>
-            <tr><td align="left" width="60%">${esc(order.customer_name || (isDelivery ? 'عميل دليفري' : 'عميل الصالة'))}</td><td class="bold" align="right" width="40%">العميل:</td></tr>
+            <tr><td align="left" width="60%">${esc(order.created_at || '')}</td><td class="bold" align="right" width="40%">التاريخ:</td></tr>
+            ${isDelivery && order.customer_name && order.customer_name !== 'عميل المطعم' ? `<tr><td align="left" width="60%">${esc(order.customer_name)}</td><td class="bold" align="right" width="40%">العميل:</td></tr>` : ''}
             ${isDelivery && order.customer_phone ? `<tr><td align="left" width="60%" dir="ltr" style="text-align:left">${esc(order.customer_phone)}</td><td class="bold" align="right" width="40%">التليفون:</td></tr>` : ''}
             ${isDelivery && (order.area_name || order.detailed_address) ? `<tr><td align="left" width="60%">${esc(order.area_name || '')} ${esc(order.detailed_address || '')}</td><td class="bold" align="right" width="40%">العنوان:</td></tr>` : ''}
           </table>
@@ -613,15 +613,14 @@ function receiptHtml(order, kitchen = false) {
             </tr>
             ${kitchenItemsHtml}
           </table>
-          <div class="divider"></div>
-          <div class="center subtitle bold" style="margin-top: 4px;">يرجى تحضير الطعام بأسرع وقت!</div>
+          <div class="center subtitle bold" style="margin-top: 8px;">يرجى تحضير الطعام بأسرع وقت!</div>
         </div>
       </body>
       </html>
     `;
   }
 
-  // Customer / Cashier Compact 80mm Receipt
+  // Customer / Cashier Clean Spaced 80mm Receipt
   const customerItemsHtml = (order.items || []).map(i => {
     const extList = (i.extras || []).map(e => (typeof e === 'object' ? e.name : e)).filter(Boolean);
     const hasSpicy = (i.extras || []).some(e => e.system_key === 'spicy' || (e.name && e.name.includes('حار'))) || (i.item_name && i.item_name.includes('حار'));
@@ -630,9 +629,9 @@ function receiptHtml(order, kitchen = false) {
     const lineTotal = money(i.quantity * i.unit_price);
     return `
       <tr class="item-row">
-        <td align="left" width="28%" class="item-price">${lineTotal}</td>
-        <td align="center" width="14%" class="item-qty">${i.quantity}</td>
-        <td align="right" width="58%">
+        <td align="left" width="30%" class="item-price">${lineTotal}</td>
+        <td align="center" width="15%" class="item-qty">${i.quantity}</td>
+        <td align="right" width="55%">
           <span class="item-name">${esc(i.item_name)}${i.size_name && i.size_name !== 'عادي' ? ' (' + esc(i.size_name) + ')' : ''}</span>${spicyBadge}
           ${extHtml}
         </td>
@@ -641,6 +640,7 @@ function receiptHtml(order, kitchen = false) {
   }).join('');
 
   const hasExtraTotals = Number(order.delivery_fee || 0) > 0 || Number(order.discount || 0) > 0;
+  const showDeliveryDetails = isDelivery && (order.customer_phone || order.area_name || order.detailed_address || (order.customer_name && order.customer_name !== 'عميل المطعم'));
 
   return `
     <html dir="rtl">
@@ -649,59 +649,63 @@ function receiptHtml(order, kitchen = false) {
       <style>
         @media print {
           @page { margin: 0; size: 80mm auto; }
-          body { margin: 0; padding: 2px 4px; }
+          body { margin: 0; padding: 4px 6px; }
         }
         body {
           font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
           direction: rtl;
           text-align: right;
           margin: 0 auto;
-          padding: 4px;
+          padding: 6px 8px;
           width: 72mm;
           max-width: 72mm;
           color: #000;
           background: #fff;
           font-weight: bold;
-          font-size: 11.5px;
-          line-height: 1.25;
+          font-size: 12px;
+          line-height: 1.55;
         }
         .receipt-container { width: 100%; margin: 0 auto; }
         .center { text-align: center; }
         .bold { font-weight: bold; }
-        .title { font-size: 16px; font-weight: 900; margin: 1px 0; color: #000; }
-        .contact-line { font-size: 10.5px; margin: 1px 0; color: #000; }
-        .divider { border-top: 1px dashed #000; margin: 4px 0; }
-        .solid-divider { border-top: 1.2px solid #000; margin: 4px 0; }
-        .info-table { width: 100%; border-collapse: collapse; margin: 3px 0; font-size: 11px; }
-        .info-table td { padding: 1.5px 0; color: #000; }
-        .items-table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 11.5px; }
-        .items-table th { border-bottom: 1.2px solid #000; padding: 3px 0; font-weight: bold; font-size: 11.5px; color: #000; }
-        .items-table td { padding: 2.5px 0; vertical-align: top; color: #000; }
-        .item-row { border-bottom: 1px dashed #000; }
-        .item-qty { font-size: 12px; font-weight: 900; color: #000; text-align: center; }
+        .title { font-size: 17px; font-weight: 900; margin: 0 0 2px 0; color: #000; }
+        .contact-line { font-size: 11px; margin-bottom: 4px; color: #000; }
+        .invoice-title { font-size: 14px; font-weight: 900; margin: 4px 0 1px 0; color: #000; }
+        .invoice-date { font-size: 11px; color: #222; margin-bottom: 8px; font-weight: bold; }
+        .delivery-box { margin: 6px 0; font-size: 11.5px; line-height: 1.5; }
+        .items-table { width: 100%; border-collapse: collapse; margin: 8px 0 6px 0; font-size: 12px; }
+        .items-table th { border-bottom: 1.5px solid #000; padding: 4px 0; font-weight: bold; font-size: 12px; color: #000; }
+        .items-table td { padding: 5px 0; vertical-align: top; color: #000; }
+        .item-qty { font-size: 12.5px; font-weight: 900; color: #000; text-align: center; }
         .item-name { font-weight: bold; }
         .item-price { font-weight: 900; text-align: left; }
-        .extras { font-size: 9.5px; color: #222; padding-right: 5px; margin-top: 1px; }
+        .extras { font-size: 10px; color: #333; padding-right: 6px; margin-top: 2px; }
         .spicy { color: #000; font-weight: bold; }
+        .totals-table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 11.5px; line-height: 1.5; }
+        .totals-table td { padding: 2px 0; }
         .notes-box {
           border: 1px solid #000;
-          padding: 3px 5px;
-          margin: 3px 0;
-          font-size: 10.5px;
+          padding: 4px 6px;
+          margin: 6px 0;
+          font-size: 11px;
           font-weight: bold;
           background: #fff;
+          line-height: 1.4;
         }
         .grand-total {
-          font-size: 14.5px;
+          font-size: 15px;
           font-weight: 900;
           color: #000;
-          border: 1.5px solid #000;
-          padding: 4px 6px;
-          margin: 4px 0;
+          border: 2px solid #000;
+          padding: 6px;
+          margin: 8px 0;
           background: #fff;
           text-align: center;
         }
-        .footer-contact { font-size: 10px; text-align: center; margin-top: 4px; color: #222; }
+        .qr-wrap { text-align: center; margin: 8px 0 4px 0; }
+        .qr-wrap img { display: inline-block; width: 65px; height: 65px; image-rendering: pixelated; }
+        .footer-contact { font-size: 12px; font-weight: bold; text-align: center; margin-top: 6px; color: #000; }
+        .dev-credits { font-size: 9px; font-weight: normal; color: #555; text-align: center; margin-top: 2px; direction: ltr; }
       </style>
     </head>
     <body>
@@ -709,56 +713,51 @@ function receiptHtml(order, kitchen = false) {
         <div class="center">
           <div class="title">بروست — BROOST</div>
           <div class="contact-line">هاتف: 0552802874 · 01092453841</div>
+          <div class="invoice-title">فاتورة رقم #${order.id}</div>
+          <div class="invoice-date">${esc(order.created_at || '')}</div>
         </div>
-        <div class="divider"></div>
-        <table class="info-table">
-          <tr>
-            <td align="left" width="50%">${esc(order.created_at || '')}</td>
-            <td class="bold" align="right" width="50%">فاتورة: ${invoiceNumber}</td>
-          </tr>
-          <tr>
-            <td align="left" width="50%">${esc(order.customer_name || (isDelivery ? 'عميل دليفري' : 'صالة / سفري'))}</td>
-            <td class="bold" align="right" width="50%">النوع: ${isDelivery ? 'دليفري' : 'صالة / سفري'}</td>
-          </tr>
-          ${isDelivery && order.customer_phone ? `<tr><td align="left" width="60%" dir="ltr" style="text-align:left">${esc(order.customer_phone)}</td><td class="bold" align="right" width="40%">التليفون:</td></tr>` : ''}
-          ${isDelivery && (order.area_name || order.detailed_address) ? `<tr><td align="left" width="60%">${esc(order.area_name || '')} ${esc(order.detailed_address || '')}</td><td class="bold" align="right" width="40%">العنوان:</td></tr>` : ''}
-        </table>
-        <div class="divider"></div>
+
+        ${showDeliveryDetails ? `
+          <div class="delivery-box">
+            ${order.customer_name && order.customer_name !== 'عميل المطعم' ? `<div>العميل: ${esc(order.customer_name)}</div>` : ''}
+            ${order.customer_phone ? `<div dir="ltr" style="text-align:right">التليفون: ${esc(order.customer_phone)}</div>` : ''}
+            ${order.area_name || order.detailed_address ? `<div>العنوان: ${esc(order.area_name || '')} ${esc(order.detailed_address || '')}</div>` : ''}
+          </div>
+        ` : ''}
+
         <table class="items-table">
-          <tr>
-            <th align="left" width="28%">الإجمالي</th>
-            <th align="center" width="14%">العدد</th>
-            <th align="right" width="58%">الوجبة</th>
-          </tr>
-          ${customerItemsHtml}
+          <thead>
+            <tr>
+              <th align="left" width="30%">الإجمالي</th>
+              <th align="center" width="15%">العدد</th>
+              <th align="right" width="55%">الوجبة</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${customerItemsHtml}
+          </tbody>
         </table>
+
         ${hasExtraTotals ? `
-          <div class="solid-divider"></div>
-          <table class="info-table">
-            <tr><td align="left" width="50%">${money(order.subtotal)}</td><td class="bold" align="right" width="50%">الأصناف:</td></tr>
-            ${Number(order.delivery_fee || 0) > 0 ? `<tr><td align="left" width="50%">${money(order.delivery_fee)}</td><td class="bold" align="right" width="50%">رسوم التوصيل:</td></tr>` : ''}
-            ${Number(order.discount || 0) > 0 ? `<tr><td align="left" width="50%">-${money(order.discount)}</td><td class="bold" align="right" width="50%">الخصم:</td></tr>` : ''}
+          <table class="totals-table">
+            <tr><td align="left">${money(order.subtotal)}</td><td align="right">الأصناف:</td></tr>
+            ${Number(order.delivery_fee || 0) > 0 ? `<tr><td align="left">${money(order.delivery_fee)}</td><td align="right">رسوم التوصيل:</td></tr>` : ''}
+            ${Number(order.discount || 0) > 0 ? `<tr><td align="left">-${money(order.discount)}</td><td align="right">الخصم:</td></tr>` : ''}
           </table>
-        ` : '<div class="solid-divider"></div>'}
+        ` : ''}
+
         <div class="grand-total">
           الإجمالي الكلي: ${money(order.total)}
         </div>
-        <table class="info-table">
-          <tr>
-            <td align="left" width="50%">${esc({ CASH: 'نقدي (كاش)', WALLET: 'محفظة إلكترونية', VISA: 'فيزا / بطاقة' }[order.payment_method] || order.payment_method || 'نقدي')}</td>
-            <td class="bold" align="right" width="50%">طريقة الدفع:</td>
-          </tr>
-          ${Number(order.cash_received || 0) > 0 && Number(order.change_due || 0) > 0 ? `
-            <tr>
-              <td align="left" width="50%">${money(order.change_due)} (المدفوع: ${money(order.cash_received)})</td>
-              <td class="bold" align="right" width="50%">الباقي:</td>
-            </tr>
-          ` : ''}
-        </table>
+
         ${order.notes ? `<div class="notes-box">ملاحظة: ${esc(order.notes)}</div>` : ''}
-        ${order.cashier_name ? `<div style="font-size:10px;text-align:center;margin:2px 0;">الكاشير: ${esc(order.cashier_name)}</div>` : ''}
-        <div class="divider"></div>
-        <div class="footer-contact">شكراً لزيارتكم — نظام بروست السحابي</div>
+
+        <div class="qr-wrap">
+          <img src="${QR_DATA_URL}" alt="QR"/>
+        </div>
+
+        <div class="footer-contact">شكراً لزيارتكم — مطعم بروست</div>
+        <div class="dev-credits">system by men3em khaled</div>
       </div>
     </body>
     </html>
