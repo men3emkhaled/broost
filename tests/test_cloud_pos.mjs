@@ -170,4 +170,33 @@ test('renderHistory groups invoices by day and supports search/filtering', () =>
   assert(h.get('#history').innerHTML.includes('#102'));
 });
 
+test('orderCard hides edit and cancel buttons for completed and cancelled orders', () => {
+  const h = harness(async () => ({}));
+  const completedHtml = h.run(`orderCard({
+    id: 99,
+    status: 'COMPLETED',
+    fulfillment: 'DELIVERY',
+    source: 'ONLINE',
+    customer_name: 'علي',
+    total: 215,
+    items: [{ item_name: 'وجبة', quantity: 1, unit_price: 200 }]
+  })`);
+  assert(completedHtml.includes('طباعة'));
+  assert(!completedHtml.includes('تعديل الطلب'));
+  assert(!completedHtml.includes('إلغاء الطلب'));
+
+  const preparingHtml = h.run(`orderCard({
+    id: 100,
+    status: 'PREPARING',
+    fulfillment: 'DELIVERY',
+    source: 'ONLINE',
+    customer_name: 'علي',
+    total: 215,
+    items: [{ item_name: 'وجبة', quantity: 1, unit_price: 200 }]
+  })`);
+  assert(preparingHtml.includes('تعديل الطلب'));
+  assert(preparingHtml.includes('إلغاء الطلب'));
+});
+
+
 

@@ -658,7 +658,8 @@ setInterval(updateElapsedTimers, 10000);
 
 function orderCard(o) {
   const badgeClass = (o.status || '').toLowerCase();
-  const canEdit = o.status !== 'CANCELLED';
+  const isClosed = o.status === 'COMPLETED' || o.status === 'CANCELLED';
+  const canEdit = !isClosed;
   const isDelivery = o.fulfillment === 'DELIVERY';
   const elapsedText = getElapsedText(o.created_at);
   const elapsedClass = getElapsedClass(o.created_at);
@@ -697,7 +698,7 @@ function orderCard(o) {
         ${o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">جاهز للاستلام</button>` : ''}
         ${['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">خروج للتوصيل</button>` : ''}
         ${['PREPARING', 'READY', 'DISPATCHED'].includes(o.status) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">${isDelivery ? 'تم التسليم' : 'تم الاستلام'}</button>` : ''}
-        ${o.status !== 'CANCELLED' ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
+        ${!isClosed ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
       </div>
     </article>
   `;
@@ -876,6 +877,10 @@ async function changeStatus(id, status) {
   let payment_status = null;
   
   if (status === 'CANCELLED') {
+    if (order.status === 'COMPLETED') {
+      notice('لا يمكن إلغاء طلب مكتمل بالفعل.');
+      return;
+    }
     if (!await ask('تأكيد إلغاء الفاتورة #' + id, [{ name: 'confirm', label: 'تأكيد الإلغاء', options: [{ value: 'yes', label: 'نعم، إلغاء الفاتورة' }] }])) {
       return;
     }
@@ -902,6 +907,10 @@ async function changeStatus(id, status) {
 }
 
 async function editOrder(order) {
+  if (order.status === 'COMPLETED' || order.status === 'CANCELLED') {
+    notice('لا يمكن تعديل طلب مكتمل أو ملغي.');
+    return;
+  }
   if (state.pending) {
     notice('أكّد نتيجة الطلب المعلق أولًا.');
     return;
