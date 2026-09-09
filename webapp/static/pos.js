@@ -10,7 +10,7 @@ const statusNames = {
   COMPLETED: 'مكتمل',
   CANCELLED: 'ملغي'
 };
-const state = { token: '', data: null, cart: [], receipt: null, offset: 0, pending: null, refreshing: false, busy: false, editing: null };
+const state = { token: '', data: null, cart: [], receipt: null, offset: 0, pending: null, refreshing: false, busy: false, editing: null, historyFilter: 'ALL', historySearch: '', daySummary: null };
 const terminal = window.BROOST_POS_TERMINAL_ID || sessionStorage.getItem('broost_terminal') || crypto.randomUUID();
 if (!window.BROOST_POS_TERMINAL_ID) sessionStorage.setItem('broost_terminal', terminal);
 const base = String(window.BROOST_CONFIG?.apiBaseUrl || '').replace(/\/$/, '');
@@ -541,6 +541,58 @@ async function printReceipt(kitchen) {
   window.print();
 }
 
+function daySummaryHtml(summary) {
+  const now = new Date();
+  const reportDate = now.toLocaleDateString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const reportTime = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+
+  const topItemsHtml = (summary.top_items || []).length ? `
+    <div style="border-top:1px dashed #000;margin:8px 0;"></div>
+    <div style="font-weight:bold;text-align:right;font-size:12px;margin-bottom:4px">أكثر الأصناف مبيعاً اليوم:</div>
+    <table style="width:100%;border-collapse:collapse;text-align:right;font-size:11px">
+      <thead>
+        <tr style="border-bottom:1px solid #000">
+          <th style="padding:4px 2px">الصنف</th>
+          <th style="padding:4px 2px;text-align:center">الكمية</th>
+          <th style="padding:4px 2px;text-align:left">القيمة</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${(summary.top_items || []).map(it => `
+          <tr style="border-bottom:1px dotted #ccc">
+            <td style="padding:4px 2px">${esc(it.name)}</td>
+            <td style="padding:4px 2px;text-align:center"><b>${it.quantity}</b></td>
+            <td style="padding:4px 2px;text-align:left">${money(it.sales)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '';
+
+  return `<html dir="rtl"><head><meta charset="utf-8"><style>body{font-family:'Cairo',Tahoma,Arial,sans-serif;text-align:center;font-size:12px;color:#000;margin:0;padding:12px}h2{font-size:20px;margin:0 0 4px 0;font-weight:800}h3{font-size:14px;margin:0 0 6px 0;font-weight:700;border-bottom:1px dashed #000;padding-bottom:4px}.meta{font-size:11px;margin:2px 0}.divider{border-top:1px dashed #000;margin:8px 0}.double-divider{border-top:2px solid #000;margin:8px 0}table{width:100%;border-collapse:collapse;margin:4px 0}td{padding:4px 2px;font-size:11px}.highlight-box{border:1px solid #000;padding:6px;margin:8px 0;font-size:13px;font-weight:bold}</style></head><body><h2>بروست — BROOST</h2><h3>تقرير ملخص مبيعات اليوم (X-Report)</h3><p class="meta">التاريخ: ${esc(reportDate)} · الوقت: ${esc(reportTime)}</p><p class="meta">الكاشير: ${esc(summary.cashier_name || 'كاشير بروست')}${summary.shift_id ? ' · وردية #' + summary.shift_id : ''}</p><div class="divider"></div><table><tr><td style="text-align:right">إجمالي الفواتير:</td><td style="text-align:left"><b>${summary.total_orders || 0}</b></td></tr><tr><td style="text-align:right">فواتير مكتملة:</td><td style="text-align:left">${summary.completed_orders_count || 0}</td></tr>${summary.active_orders_count ? `<tr><td style="text-align:right">طلبات جارية:</td><td style="text-align:left">${summary.active_orders_count}</td></tr>` : ''}${summary.cancelled_orders_count ? `<tr><td style="text-align:right">فواتير ملغاة:</td><td style="text-align:left">${summary.cancelled_orders_count}</td></tr>` : ''}</table><div class="divider"></div><table><tr><td style="text-align:right">مبيعات الصالة / سفري (${summary.pickup_count || 0}):</td><td style="text-align:left">${money(summary.pickup_total || 0)}</td></tr><tr><td style="text-align:right">مبيعات الدليفري (${summary.delivery_count || 0}):</td><td style="text-align:left">${money(summary.delivery_total || 0)}</td></tr><tr><td style="text-align:right">منها رسوم التوصيل:</td><td style="text-align:left">${money(summary.delivery_fees || 0)}</td></tr>${summary.discounts > 0 ? `<tr><td style="text-align:right">إجمالي الخصومات:</td><td style="text-align:left">-${money(summary.discounts)}</td></tr>` : ''}</table><div class="highlight-box"><div>إجمالي المبيعات: ${money(summary.total_sales || 0)}</div><div style="font-size:11px;font-weight:normal;margin-top:2px">الصافي بدون توصيل: ${money(summary.net_sales || 0)}</div></div><div class="divider"></div><div style="font-weight:bold;text-align:right;font-size:12px;margin-bottom:4px">تفصيل طرق الدفع:</div><table><tr><td style="text-align:right">نقدي (كاش):</td><td style="text-align:left"><b>${money(summary.cash_total || 0)}</b></td></tr><tr><td style="text-align:right">محافظ إلكترونية / فودافون:</td><td style="text-align:left">${money(summary.wallet_total || 0)}</td></tr><tr><td style="text-align:right">فيزا / بطاقات:</td><td style="text-align:left">${money(summary.visa_total || 0)}</td></tr></table>${summary.expected_cash !== undefined ? `<div class="highlight-box" style="background:#f9f9f9">النقدية بالدرج: ${money(summary.expected_cash)}</div>` : ''}${topItemsHtml}<div class="double-divider"></div><p class="meta" style="margin-top:15px">توقيع المسؤول: ............................</p><p style="font-size:10px;margin-top:8px;color:#444">نظام بروست السحابي لإدارة المطاعم</p></body></html>`;
+}
+
+async function printDaySummary() {
+  notice('جاري تجهيز تقرير ملخص مبيعات اليوم...');
+  const summary = await api('/api/pos/day-summary');
+  state.daySummary = summary;
+  const html = daySummaryHtml(summary);
+
+  if (window.broostPrinter && typeof window.broostPrinter.printHtml === 'function') {
+    window.broostPrinter.printHtml(html);
+    notice('تم إرسال ملخص اليوم للطابعة الحرارية بنجاح');
+    return;
+  }
+
+  if ($('#receipt')) {
+    const match = html.match(/<body>([\s\S]*)<\/body>/);
+    if (match) $('#receipt').innerHTML = match[1];
+  }
+  if ($('#receiptDialog') && !$('#receiptDialog').open) $('#receiptDialog').showModal();
+  window.print();
+  notice('تم فتح نافذة طباعة ملخص مبيعات اليوم');
+}
+
 function parsedLocalDate(value) {
   if (!value) return null;
   const raw = String(value).trim();
@@ -697,11 +749,85 @@ function renderActive() {
 }
 
 let history = [];
+
+function renderHistory() {
+  const container = $('#history');
+  if (!container) return;
+
+  const q = (state.historySearch || '').toLowerCase().trim();
+  const filter = state.historyFilter || 'ALL';
+
+  const filtered = history.filter(o => {
+    if (filter === 'PICKUP' && o.fulfillment !== 'PICKUP') return false;
+    if (filter === 'DELIVERY' && o.fulfillment !== 'DELIVERY') return false;
+    if (filter === 'POS' && o.source !== 'POS') return false;
+    if (filter === 'ONLINE' && o.source === 'POS') return false;
+
+    if (q) {
+      const matchId = String(o.id || '').includes(q);
+      const matchPub = String(o.public_number || '').toLowerCase().includes(q);
+      const matchName = String(o.customer_name || '').toLowerCase().includes(q);
+      const matchPhone = String(o.customer_phone || '').includes(q);
+      if (!matchId && !matchPub && !matchName && !matchPhone) return false;
+    }
+    return true;
+  });
+
+  if (!filtered.length) {
+    container.innerHTML = `<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted)">
+      ${q || filter !== 'ALL' ? 'لا توجد فواتير مطابقة لخيارات البحث والفلترة الحالية.' : 'لا توجد فواتير محفوظة في السجل.'}
+    </p>`;
+    return;
+  }
+
+  const dayGroups = new Map();
+  filtered.forEach(o => {
+    const { key, label } = getOrderDayInfo(o.created_at);
+    if (!dayGroups.has(key)) {
+      dayGroups.set(key, { label, orders: [] });
+    }
+    dayGroups.get(key).orders.push(o);
+  });
+
+  let html = '';
+  for (const [_, group] of dayGroups) {
+    const validOrders = group.orders.filter(o => o.status !== 'CANCELLED');
+    const daySum = validOrders.reduce((acc, o) => acc + Number(o.total || 0), 0);
+
+    html += `
+      <section class="day-group">
+        <div class="day-header">
+          <span class="day-title">${esc(group.label)}</span>
+          <span class="day-badge">${group.orders.length} ${group.orders.length === 1 ? 'فاتورة' : 'فواتير'}</span>
+          <span class="day-total">إجمالي: <strong>${money(daySum)}</strong></span>
+        </div>
+        <div class="order-grid">
+          ${group.orders.map(orderCard).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  container.innerHTML = html;
+}
+
 async function loadHistory() {
   history = await api('/api/pos/history?offset=' + state.offset);
-  if ($('#history')) {
-    $('#history').innerHTML = history.map(orderCard).join('') || '<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted)">لا توجد فواتير محفوظة في السجل.</p>';
-  }
+
+  try {
+    const summary = await api('/api/pos/day-summary');
+    state.daySummary = summary;
+    if ($('#historyTodaySales')) $('#historyTodaySales').textContent = money(summary.total_sales || 0);
+    if ($('#historyNetHint')) $('#historyNetHint').textContent = `الصافي: ${money(summary.net_sales || 0)}`;
+    if ($('#historyTodayCount')) $('#historyTodayCount').textContent = `${summary.total_orders || 0} فاتورة`;
+    if ($('#historyBreakdownHint')) $('#historyBreakdownHint').textContent = `${summary.pickup_count || 0} صالة · ${summary.delivery_count || 0} دليفري`;
+    if ($('#historyDrawerCash')) $('#historyDrawerCash').textContent = money(summary.expected_cash || summary.cash_total || 0);
+    if ($('#historyElectronic')) $('#historyElectronic').textContent = money((summary.wallet_total || 0) + (summary.visa_total || 0));
+    if ($('#historyElectronicHint')) $('#historyElectronicHint').textContent = `${money(summary.wallet_total || 0)} محفظة · ${money(summary.visa_total || 0)} فيزا`;
+  } catch (_) {}
+
+  renderHistory();
+
   if ($('#previous')) $('#previous').disabled = state.offset === 0;
   if ($('#next')) $('#next').disabled = history.length < 100;
 }
@@ -1043,8 +1169,26 @@ for (const selector of ['#fulfillment', '#area', '#discount', '#cash', '#payment
   if ($(selector)) $(selector).oninput = totals;
 }
 
+if ($('#printDaySummary')) {
+  $('#printDaySummary').onclick = () => run(printDaySummary);
+}
 if ($('#refreshOrders')) {
   $('#refreshOrders').onclick = () => run(loadHistory);
+}
+if ($('#historySearch')) {
+  $('#historySearch').oninput = () => {
+    state.historySearch = $('#historySearch').value;
+    if ($('#clearHistorySearch')) $('#clearHistorySearch').hidden = !state.historySearch;
+    renderHistory();
+  };
+}
+if ($('#clearHistorySearch')) {
+  $('#clearHistorySearch').onclick = () => {
+    if ($('#historySearch')) $('#historySearch').value = '';
+    state.historySearch = '';
+    $('#clearHistorySearch').hidden = true;
+    renderHistory();
+  };
 }
 if ($('#refreshActive')) {
   $('#refreshActive').onclick = () => run(refresh);
@@ -1137,6 +1281,17 @@ document.addEventListener('click', e => run(async () => {
       c.classList.toggle('active', (c.dataset.cat || '') === cat);
     });
     renderProducts();
+  }
+
+  // History Filter Pills
+  if (b.classList.contains('filter-pill')) {
+    const group = b.closest('#historyFilters');
+    if (group) {
+      group.querySelectorAll('.filter-pill').forEach(pill => pill.classList.remove('active'));
+      b.classList.add('active');
+      state.historyFilter = b.dataset.filter || 'ALL';
+      renderHistory();
+    }
   }
 
   // Cart Item Quantity Stepper

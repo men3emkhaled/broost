@@ -176,12 +176,54 @@
         <p class="subtitle">أرشيف الفواتير السابقة وإعادة الطباعة والتعديل</p>
       </div>
       <div class="tab-actions">
-        <button id="refreshOrders" class="btn-secondary">تحديث</button>
-        <button id="previous" class="btn-secondary">الأحدث</button>
-        <button id="next" class="btn-secondary">الأقدم</button>
+        <button id="printDaySummary" type="button" class="btn-primary">طباعة ملخص اليوم</button>
+        <button id="refreshOrders" type="button" class="btn-secondary">تحديث</button>
+        <button id="previous" type="button" class="btn-secondary">الأحدث</button>
+        <button id="next" type="button" class="btn-secondary">الأقدم</button>
       </div>
     </div>
-    <div id="history" class="order-grid"></div>
+
+    <!-- Daily Quick Summary Bar -->
+    <section id="historySummary" class="history-summary-bar">
+      <div class="history-stat-card">
+        <span class="stat-label">مبيعات اليوم</span>
+        <strong id="historyTodaySales" class="stat-val">0.00 ج.م</strong>
+        <span id="historyNetHint" class="stat-sub">الصافي: 0.00 ج.م</span>
+      </div>
+      <div class="history-stat-card">
+        <span class="stat-label">عدد الفواتير اليوم</span>
+        <strong id="historyTodayCount" class="stat-val">0 فاتورة</strong>
+        <span id="historyBreakdownHint" class="stat-sub">0 صالة · 0 دليفري</span>
+      </div>
+      <div class="history-stat-card">
+        <span class="stat-label">النقدية بالدرج</span>
+        <strong id="historyDrawerCash" class="stat-val highlight">0.00 ج.م</strong>
+        <span class="stat-sub">شامل العهدة والمصروفات</span>
+      </div>
+      <div class="history-stat-card">
+        <span class="stat-label">محافظ وفيزا</span>
+        <strong id="historyElectronic" class="stat-val">0.00 ج.م</strong>
+        <span id="historyElectronicHint" class="stat-sub">0 محفظة · 0 فيزا</span>
+      </div>
+    </section>
+
+    <!-- History Search and Filter Toolbar -->
+    <div class="history-toolbar">
+      <div class="search-box history-search">
+        <span class="search-label">بحث:</span>
+        <input id="historySearch" placeholder="ابحث برقم الفاتورة، اسم العميل، أو رقم الهاتف..." autocomplete="off">
+        <button type="button" id="clearHistorySearch" class="clear-btn" hidden>×</button>
+      </div>
+      <div class="history-filter-pills" id="historyFilters">
+        <button type="button" class="filter-pill active" data-filter="ALL">الكل</button>
+        <button type="button" class="filter-pill" data-filter="PICKUP">صالة / سفري</button>
+        <button type="button" class="filter-pill" data-filter="DELIVERY">توصيل دليفري</button>
+        <button type="button" class="filter-pill" data-filter="POS">كاشير</button>
+        <button type="button" class="filter-pill" data-filter="ONLINE">أونلاين</button>
+      </div>
+    </div>
+
+    <div id="history" class="history-content"></div>
   </main>
 
   <!-- Tab 4: Shift & Accounts -->

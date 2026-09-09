@@ -123,5 +123,26 @@ class CloudPOSTests(unittest.TestCase):
         stale=self.post('orders',{**payload,'request_id':'edit-request-2','discount':30})
         self.assertEqual(stale.status_code,409)
 
+    def test_day_summary_and_history_search(self):
+        self.open()
+        order = self.post('orders', self.payload).json()
+        summary = self.client.get('/api/pos/day-summary', headers=self.headers).json()
+        self.assertEqual(summary['total_orders'], 1)
+        self.assertEqual(summary['total_sales'], 190.0)
+        self.assertEqual(summary['pickup_count'], 1)
+        self.assertEqual(summary['cash_total'], 190.0)
+        self.assertEqual(len(summary['top_items']), 1)
+        self.assertEqual(summary['top_items'][0]['name'], 'Meal')
+        self.assertEqual(summary['top_items'][0]['quantity'], 2)
+
+        # History with query search
+        hist_all = self.client.get('/api/pos/history', headers=self.headers).json()
+        self.assertEqual(len(hist_all), 1)
+        hist_search = self.client.get(f'/api/pos/history?q={order["id"]}', headers=self.headers).json()
+        self.assertEqual(len(hist_search), 1)
+        hist_miss = self.client.get('/api/pos/history?q=nonexistent', headers=self.headers).json()
+        self.assertEqual(len(hist_miss), 0)
+
 
 if __name__=='__main__':unittest.main()
+

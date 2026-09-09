@@ -6,7 +6,7 @@ import hmac
 import json
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Literal
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -269,10 +269,126 @@ def install_cloud_routes(app):
                     'orders':s.admin_orders_to_dict(conn,conn.execute("SELECT * FROM orders WHERE status NOT IN ('COMPLETED','CANCELLED') ORDER BY id DESC").fetchall())}
 
     @app.get('/api/pos/history',dependencies=[Depends(require_session)])
-    def history(offset:int=0):
+    def history(offset:int=0, q:str='', fulfillment:str=''):
         if offset<0: raise HTTPException(422,'صفحة غير صحيحة')
         with s.db_connection() as conn:
-            return s.admin_orders_to_dict(conn,conn.execute('SELECT * FROM orders ORDER BY id DESC LIMIT 100 OFFSET ?',(offset,)).fetchall())
+            clauses = []
+            params = []
+            q_clean = q.strip()
+            if q_clean:
+                if q_clean.isdigit():
+                    clauses.append("(id=? OR public_number LIKE ? OR customer_phone LIKE ?)")
+                    params.extend([int(q_clean), f"%{q_clean}%", f"%{q_clean}%"])
+                else:
+                    clauses.append("(public_number LIKE ? OR customer_name LIKE ? OR customer_phone LIKE ?)")
+                    params.extend([f"%{q_clean}%", f"%{q_clean}%", f"%{q_clean}%"])
+            if fulfillment in ('PICKUP', 'DELIVERY'):
+                clauses.append("fulfillment=?")
+                params.append(fulfillment)
+            where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            sql = f"SELECT * FROM orders {where_sql} ORDER BY id DESC LIMIT 100 OFFSET ?"
+            params.append(offset)
+            return s.admin_orders_to_dict(conn, conn.execute(sql, tuple(params)).fetchall())
+
+    @app.get('/api/pos/day-summary',dependencies=[Depends(require_session)])
+    def day_summary(start:str=''):
+        with s.db_connection() as conn:
+            start_iso = ''
+            if start.strip():
+                parsed = s.parse_utc_datetime(start.strip())
+                if parsed:
+                    start_iso = parsed.isoformat().replace("+00:00", "Z")
+            if not start_iso:
+                shift = active_shift(conn)
+                if shift and shift['opened_at']:
+                    start_iso = shift['opened_at']
+                else:
+                    now_utc = datetime.now(timezone.utc)
+                    cutoff = now_utc.replace(hour=5, minute=0, second=0, microsecond=0)
+                    if now_utc < cutoff:
+                        cutoff -= timedelta(days=1)
+                    start_iso = cutoff.isoformat().replace("+00:00", "Z")
+
+            shift = active_shift(conn)
+            shift_id = shift['id'] if shift else -1
+            date_prefix = start_iso[:10]
+
+            orders_rows = conn.execute(
+                "SELECT * FROM orders WHERE (pos_shift_id = ? OR substr(created_at, 1, 10) >= ?) ORDER BY id ASC",
+                (shift_id, date_prefix)
+            ).fetchall()
+            orders = s.admin_orders_to_dict(conn, orders_rows)
+
+            shift_info = shift_summary(conn, shift) if shift else None
+
+            total_orders = len(orders)
+            completed_orders = [o for o in orders if o['status'] == 'COMPLETED']
+            cancelled_orders = [o for o in orders if o['status'] == 'CANCELLED']
+            active_orders = [o for o in orders if o['status'] not in ('COMPLETED', 'CANCELLED')]
+
+            revenue_orders = [o for o in orders if (o['source'] == 'POS' and o['status'] != 'CANCELLED') or (o['source'] != 'POS' and o['status'] == 'COMPLETED')]
+
+            total_sales = sum(float(o.get('total') or 0) for o in revenue_orders)
+            net_sales = sum(float(o.get('subtotal') or 0) - float(o.get('discount') or 0) for o in revenue_orders)
+            delivery_fees = sum(float(o.get('delivery_fee') or 0) for o in revenue_orders)
+            discounts = sum(float(o.get('discount') or 0) for o in revenue_orders)
+
+            pickup_orders = [o for o in revenue_orders if o['fulfillment'] == 'PICKUP']
+            delivery_orders = [o for o in revenue_orders if o['fulfillment'] == 'DELIVERY']
+
+            pickup_total = sum(float(o.get('total') or 0) for o in pickup_orders)
+            delivery_total = sum(float(o.get('total') or 0) for o in delivery_orders)
+
+            cash_orders = [o for o in revenue_orders if o.get('payment_method') == 'CASH']
+            wallet_orders = [o for o in revenue_orders if o.get('payment_method') == 'WALLET']
+            visa_orders = [o for o in revenue_orders if o.get('payment_method') == 'VISA']
+
+            cash_total = sum(float(o.get('total') or 0) for o in cash_orders)
+            wallet_total = sum(float(o.get('total') or 0) for o in wallet_orders)
+            visa_total = sum(float(o.get('total') or 0) for o in visa_orders)
+
+            pos_orders = [o for o in revenue_orders if o['source'] == 'POS']
+            online_orders = [o for o in revenue_orders if o['source'] != 'POS']
+
+            top_items_rows = conn.execute("""
+                SELECT oi.item_name, SUM(oi.quantity) AS qty, SUM(oi.quantity * oi.unit_price) AS sales
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.id
+                WHERE (o.pos_shift_id = ? OR substr(o.created_at, 1, 10) >= ?) AND o.status != 'CANCELLED'
+                GROUP BY oi.item_name
+                ORDER BY qty DESC
+                LIMIT 10
+            """, (shift_id, date_prefix)).fetchall()
+
+            top_items = [{'name': r['item_name'], 'quantity': r['qty'], 'sales': round(float(r['sales']), 2)} for r in top_items_rows]
+
+            return {
+                'start_time': start_iso,
+                'generated_at': s.utc_now(),
+                'cashier_name': shift_info.get('cashier_name') if shift_info else s.setting(conn, 'cloud_cashier_name', 'DR OMAR'),
+                'shift_id': shift_info.get('id') if shift_info else None,
+                'total_orders': total_orders,
+                'completed_orders_count': len(completed_orders),
+                'active_orders_count': len(active_orders),
+                'cancelled_orders_count': len(cancelled_orders),
+                'total_sales': round(total_sales, 2),
+                'net_sales': round(net_sales, 2),
+                'delivery_fees': round(delivery_fees, 2),
+                'discounts': round(discounts, 2),
+                'pickup_count': len(pickup_orders),
+                'pickup_total': round(pickup_total, 2),
+                'delivery_count': len(delivery_orders),
+                'delivery_total': round(delivery_total, 2),
+                'pos_count': len(pos_orders),
+                'pos_total': round(sum(float(o.get('total') or 0) for o in pos_orders), 2),
+                'online_count': len(online_orders),
+                'online_total': round(sum(float(o.get('total') or 0) for o in online_orders), 2),
+                'cash_total': round(cash_total, 2),
+                'wallet_total': round(wallet_total, 2),
+                'visa_total': round(visa_total, 2),
+                'expected_cash': shift_info.get('expected_cash') if shift_info else round(cash_total, 2),
+                'top_items': top_items
+            }
 
     @app.get('/api/pos/customers',dependencies=[Depends(require_session)])
     def customers(phone:str=''):

@@ -124,3 +124,50 @@ test('incoming online order triggers onlineOrderAlert and updates alert fields',
   assert.equal(h.get('#alertOrderFulfillment').textContent, 'دليفري');
 });
 
+test('daySummaryHtml produces thermal receipt with totals and top items', () => {
+  const h = harness(async () => ({}));
+  const html = h.run(`daySummaryHtml({
+    total_orders: 15,
+    completed_orders_count: 14,
+    cancelled_orders_count: 1,
+    total_sales: 3200,
+    net_sales: 3050,
+    pickup_count: 10,
+    pickup_total: 2200,
+    delivery_count: 4,
+    delivery_total: 1000,
+    delivery_fees: 150,
+    cash_total: 2500,
+    wallet_total: 500,
+    visa_total: 200,
+    expected_cash: 2700,
+    top_items: [{ name: 'وجبة دجاج 4 قطع', quantity: 8, sales: 1200 }]
+  })`);
+  assert(html.includes('تقرير ملخص مبيعات اليوم'));
+  assert(html.includes('X-Report'));
+  assert(html.includes('وجبة دجاج 4 قطع'));
+  assert(html.includes('نظام بروست السحابي'));
+});
+
+test('renderHistory groups invoices by day and supports search/filtering', () => {
+  const h = harness(async () => ({}));
+  h.run(`
+    history = [
+      { id: 101, public_number: 'POS-00101', customer_name: 'أحمد', customer_phone: '01011111111', fulfillment: 'PICKUP', source: 'POS', total: 150, created_at: '2026-09-09 14:00:00', items: [] },
+      { id: 102, public_number: 'POS-00102', customer_name: 'محمد', customer_phone: '01022222222', fulfillment: 'DELIVERY', source: 'ONLINE', total: 250, created_at: '2026-09-09 14:30:00', items: [] }
+    ];
+    renderHistory();
+  `);
+  assert(h.get('#history').innerHTML.includes('#101'));
+  assert(h.get('#history').innerHTML.includes('#102'));
+  assert(h.get('#history').innerHTML.includes('day-group'));
+
+  h.run(`
+    state.historyFilter = 'DELIVERY';
+    renderHistory();
+  `);
+  assert(!h.get('#history').innerHTML.includes('#101'));
+  assert(h.get('#history').innerHTML.includes('#102'));
+});
+
+
