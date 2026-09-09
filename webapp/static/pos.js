@@ -976,19 +976,31 @@ function renderAccounts() {
       <div class="metric-card">
         <div class="metric-label">النقد المتوقع في الدرج</div>
         <div class="metric-val highlight">${money(shift.expected_cash)}</div>
+        <div class="metric-sub">شامل مبيعات الكاش والتوصيل والعهدة</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">إجمالي مبيعات الوردية</div>
         <div class="metric-val">${money(shift.sales)}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">عدد الفواتير</div>
-        <div class="metric-val">${shift.invoices || 0} فاتورة</div>
+        <div class="metric-sub">${shift.invoices || 0} فاتورة مسجلة</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">عهدة بداية الوردية</div>
         <div class="metric-val">${money(shift.opening_cash || 0)}</div>
+        <div class="metric-sub">نقدية فتح الدرج</div>
       </div>
+      <div class="metric-card">
+        <div class="metric-label">حركات الخزينة (مصروف/إيداع)</div>
+        <div class="metric-val" style="color:${(shift.movements_total || 0) < 0 ? '#ef4444' : (shift.movements_total || 0) > 0 ? '#16a34a' : 'inherit'}">
+          ${(shift.movements_total || 0) > 0 ? '+' : ''}${money(shift.movements_total || 0)}
+        </div>
+        <div class="metric-sub">صافي المصروفات والإيداعات</div>
+      </div>
+      ${(Number(shift.wallet || 0) + Number(shift.visa || 0)) > 0 ? `
+      <div class="metric-card">
+        <div class="metric-label">محافظ وفيزا (غير كاش)</div>
+        <div class="metric-val" style="color:#2563eb">${money(Number(shift.wallet || 0) + Number(shift.visa || 0))}</div>
+        <div class="metric-sub">${money(shift.wallet || 0)} محفظة · ${money(shift.visa || 0)} فيزا</div>
+      </div>` : ''}
     ` : '<div style="grid-column:1/-1;text-align:center;padding:30px;color:var(--text-muted)">لا توجد وردية مفتوحة حالياً. اضغط "فتح وردية" لبدء البيع.</div>';
   }
   if ($('#openShift')) $('#openShift').disabled = !!shift;
@@ -996,15 +1008,48 @@ function renderAccounts() {
   if ($('#movement')) $('#movement').disabled = !shift;
 }
 
+function formatShiftTime(openedAt, closedAt) {
+  const dOpen = parsedLocalDate(openedAt);
+  if (!dOpen) return '—';
+  const openTime = dOpen.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+  const openDate = dOpen.toLocaleDateString('ar-EG', { month: 'short', day: 'numeric' });
+
+  if (!closedAt) {
+    return `<div><b>${openDate}</b> · ${openTime}</div><small style="color:#16a34a;font-weight:700">مستمرة حالياً</small>`;
+  }
+
+  const dClose = parsedLocalDate(closedAt);
+  const closeTime = dClose ? dClose.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '—';
+  return `<div><b>${openDate}</b> · من ${openTime} إلى ${closeTime}</div>`;
+}
+
+function formatShiftDiff(actual, expected) {
+  if (actual === null || actual === undefined) return '<span style="color:var(--text-muted)">قيد العمل</span>';
+  const diff = Math.round((Number(actual) - Number(expected)) * 100) / 100;
+  if (diff === 0) {
+    return '<span class="shift-diff-tag diff-match">مطابق</span>';
+  } else if (diff > 0) {
+    return `<span class="shift-diff-tag diff-surplus">+${money(diff)} زيادة</span>`;
+  } else {
+    return `<span class="shift-diff-tag diff-deficit">${money(diff)} عجز</span>`;
+  }
+}
+
 async function loadShifts() {
   const rows = await api('/api/pos/shifts');
   if ($('#shifts')) {
+    if (!rows || !rows.length) {
+      $('#shifts').innerHTML = '<p style="text-align:center;padding:30px;color:var(--text-muted)">لا يوجد سجل للورديات حتى الآن.</p>';
+      return;
+    }
     $('#shifts').innerHTML = `
-      <table>
+      <table class="shifts-table">
         <thead>
           <tr>
             <th>رقم الوردية</th>
-            <th>الحالة والوقت</th>
+            <th>الكاشير</th>
+            <th>الوقت والتاريخ</th>
+            <th>الفواتير</th>
             <th>المبيعات</th>
             <th>النقد المتوقع</th>
             <th>النقد الفعلي</th>
@@ -1012,18 +1057,24 @@ async function loadShifts() {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(s => `
-            <tr>
-              <td><b>#${s.id}</b></td>
-              <td>${esc(s.opened_at)} <span class="order-badge ${s.closed_at ? 'completed' : 'new'}">${s.closed_at ? 'مغلقة' : 'مفتوحة'}</span></td>
-              <td>${money(s.sales)}</td>
-              <td><b>${money(s.expected_cash)}</b></td>
-              <td>${s.actual_cash === null ? '—' : money(s.actual_cash)}</td>
-              <td style="color:${(s.actual_cash - s.expected_cash) < 0 ? '#f87171' : '#34d399'}">
-                ${s.actual_cash === null ? '—' : (s.actual_cash - s.expected_cash >= 0 ? '+' : '') + money(s.actual_cash - s.expected_cash)}
-              </td>
-            </tr>
-          `).join('')}
+          ${rows.map(s => {
+            const isOpen = !s.closed_at;
+            return `
+              <tr class="${isOpen ? 'shift-row-open' : ''}">
+                <td>
+                  <strong class="shift-num">#${s.id}</strong>
+                  <span class="order-badge ${isOpen ? 'new' : 'completed'}">${isOpen ? 'مفتوحة' : 'مغلقة'}</span>
+                </td>
+                <td><b>${esc(s.cashier_name || 'الكاشير')}</b></td>
+                <td>${formatShiftTime(s.opened_at, s.closed_at)}</td>
+                <td><b>${s.invoices || 0} فاتورة</b></td>
+                <td><b>${money(s.sales)}</b></td>
+                <td style="color:#16a34a"><b>${money(s.expected_cash)}</b></td>
+                <td>${s.actual_cash === null ? '—' : money(s.actual_cash)}</td>
+                <td>${formatShiftDiff(s.actual_cash, s.expected_cash)}</td>
+              </tr>
+            `;
+          }).join('')}
         </tbody>
       </table>
     `;

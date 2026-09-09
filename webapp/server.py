@@ -1880,14 +1880,17 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
         )
         now = utc_now()
         token = secrets.token_urlsafe(32)
+        from webapp.cloud_pos import active_shift
+        shift = active_shift(conn)
+        shift_id = shift["id"] if shift else None
         cursor = conn.execute(
             """
             INSERT INTO orders (
                 resume_token, client_request_id, source, fulfillment, customer_name,
                 customer_phone, customer_phone_normalized, area_id, area_name, detailed_address, payment_method,
                 payment_status, status, subtotal, delivery_fee, discount, total, notes,
-                loyalty_points_redeemed, reward_code, created_at, updated_at
-            ) VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                loyalty_points_redeemed, reward_code, created_at, updated_at, pos_shift_id
+            ) VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 token, payload.client_request_id, payload.fulfillment,
@@ -1895,7 +1898,7 @@ def create_order(payload: CreateOrderInput) -> JSONResponse:
                 customer_phone_normalized, area_id,
                 area_name, address, payload.payment_method, payment_status, subtotal,
                 delivery_fee, discount, total, payload.notes.strip(), redeemed_points,
-                normalized_reward_code or None, now, now,
+                normalized_reward_code or None, now, now, shift_id,
             ),
         )
         order_id = cursor.lastrowid

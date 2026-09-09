@@ -1459,6 +1459,14 @@ main.tab {
   color: var(--primary);
 }
 
+/* Metric Subtitle */
+.metric-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
 /* Shifts Table */
 .shifts-table-wrap table {
   width: 100%;
@@ -1478,6 +1486,41 @@ main.tab {
   background: var(--bg-subtle);
   font-weight: 800;
   color: var(--text-secondary);
+}
+
+.shifts-table tr.shift-row-open {
+  background: #f0fdf4;
+}
+
+.shift-num {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-inline-end: 6px;
+}
+
+.shift-diff-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.shift-diff-tag.diff-match {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.shift-diff-tag.diff-surplus {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.shift-diff-tag.diff-deficit {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 /* -------------------------------------------------------------------

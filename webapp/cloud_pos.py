@@ -131,11 +131,22 @@ def terminal_id(x_pos_terminal: str = Header(min_length=8,max_length=120)):
 
 
 def shift_summary(conn, shift):
-    row = conn.execute('''SELECT COALESCE(SUM(CASE WHEN status!='CANCELLED' THEN total-delivery_fee ELSE 0 END),0) AS sales,
-        COALESCE(SUM(CASE WHEN status='COMPLETED' AND payment_method='CASH' AND fulfillment='PICKUP' THEN total ELSE 0 END),0) AS cash,
-        COUNT(*) AS invoices FROM orders WHERE pos_shift_id=?''',(shift['id'],)).fetchone()
+    row = conn.execute('''SELECT 
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' THEN total ELSE 0 END),0) AS sales,
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' THEN total-delivery_fee ELSE 0 END),0) AS net_sales,
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' AND payment_method='CASH' THEN total ELSE 0 END),0) AS cash,
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' AND payment_method='WALLET' THEN total ELSE 0 END),0) AS wallet,
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' AND payment_method='VISA' THEN total ELSE 0 END),0) AS visa,
+        COALESCE(SUM(CASE WHEN status!='CANCELLED' THEN delivery_fee ELSE 0 END),0) AS delivery_fees,
+        COUNT(CASE WHEN status!='CANCELLED' THEN 1 END) AS invoices 
+        FROM orders WHERE pos_shift_id=?''',(shift['id'],)).fetchone()
     movements = conn.execute('SELECT COALESCE(SUM(amount),0) AS total FROM pos_cash_movements WHERE shift_id=?',(shift['id'],)).fetchone()['total']
-    return {**dict(shift), **dict(row), 'expected_cash':round(float(shift['opening_cash'])+float(row['cash'])+float(movements),2)}
+    return {
+        **dict(shift), 
+        **dict(row), 
+        'movements_total': round(float(movements), 2),
+        'expected_cash': round(float(shift['opening_cash'])+float(row['cash'])+float(movements),2)
+    }
 
 
 def driver_balances(conn):
