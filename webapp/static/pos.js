@@ -72,6 +72,150 @@ async function run(fn) {
   }
 }
 
+let knownOnlineOrderIds = null;
+let activeAlertOrder = null;
+let titleFlashTimer = null;
+let originalDocTitle = typeof document !== 'undefined' ? document.title : '';
+
+function playNewOrderSound() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      if (!window._posAudioCtx) window._posAudioCtx = new AudioCtx();
+      const ctx = window._posAudioCtx;
+      if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+        ctx.resume().catch(() => {});
+      }
+      const playTone = (freq, start, duration, type = 'sine', gainVal = 0.35) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+        gain.gain.setValueAtTime(gainVal, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + start);
+        osc.stop(ctx.currentTime + start + duration);
+      };
+
+      // Crisp, loud, pleasant two-cycle restaurant chime (Ding-Dong-Ding)
+      playTone(587.33, 0.00, 0.30, 'triangle', 0.45); // D5
+      playTone(880.00, 0.14, 0.40, 'sine', 0.55);    // A5
+      playTone(1174.66, 0.28, 0.55, 'sine', 0.65);   // D6
+
+      playTone(587.33, 0.65, 0.30, 'triangle', 0.45);
+      playTone(880.00, 0.79, 0.40, 'sine', 0.55);
+      playTone(1174.66, 0.93, 0.75, 'sine', 0.65);
+    }
+  } catch {
+    /* ignore audio error */
+  }
+
+  // Native desktop app beep bridge if available
+  try {
+    if (window.broostPrinter && typeof window.broostPrinter.playAlert === 'function') {
+      window.broostPrinter.playAlert();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function flashTitle(active) {
+  if (typeof document === 'undefined') return;
+  if (!originalDocTitle) originalDocTitle = document.title || 'بروست — الكاشير السحابي';
+  if (titleFlashTimer) {
+    clearInterval(titleFlashTimer);
+    titleFlashTimer = null;
+  }
+  if (!active) {
+    document.title = originalDocTitle;
+    return;
+  }
+  let step = 0;
+  titleFlashTimer = setInterval(() => {
+    document.title = (step++ % 2 === 0) ? '🔔 طلب أونلاين جديد!' : originalDocTitle;
+  }, 1000);
+}
+
+function showOnlineOrderAlert(order) {
+  if (!order) return;
+  activeAlertOrder = order;
+  const alertEl = $('#onlineOrderAlert');
+  if (!alertEl) return;
+
+  const numEl = $('#alertOrderNumber');
+  if (numEl) numEl.textContent = `#${order.id}`;
+
+  const fulfillEl = $('#alertOrderFulfillment');
+  if (fulfillEl) {
+    fulfillEl.textContent = order.fulfillment === 'DELIVERY' ? 'دليفري' : 'استلام من المطعم';
+    if (fulfillEl.style) {
+      fulfillEl.style.color = order.fulfillment === 'DELIVERY' ? '#1d4ed8' : '#047857';
+      fulfillEl.style.background = order.fulfillment === 'DELIVERY' ? '#dbeafe' : '#d1fae5';
+    }
+  }
+
+  const custEl = $('#alertCustomerName');
+  if (custEl) custEl.textContent = order.customer_name || 'عميل أونلاين';
+
+  const totalEl = $('#alertOrderTotal');
+  if (totalEl) totalEl.textContent = `${Number(order.total || 0).toFixed(2)} ج.م`;
+
+  alertEl.hidden = false;
+  playNewOrderSound();
+  flashTitle(true);
+}
+
+function hideOnlineOrderAlert() {
+  activeAlertOrder = null;
+  const alertEl = $('#onlineOrderAlert');
+  if (alertEl) alertEl.hidden = true;
+  flashTitle(false);
+}
+
+function checkIncomingOnlineOrders() {
+  const currentOrders = state.data?.orders || [];
+  const newOnlineOrders = currentOrders.filter(o => o.source === 'ONLINE' && o.status === 'NEW');
+  const hasNewOnline = newOnlineOrders.length > 0;
+
+  // Toggle glowing pulse on the live orders button
+  const liveBtn = document.querySelector?.('.live-orders-btn');
+  if (liveBtn) {
+    liveBtn.classList.toggle('has-new-online', hasNewOnline);
+  }
+
+  if (knownOnlineOrderIds === null) {
+    // Initial load: remember all currently known IDs
+    knownOnlineOrderIds = new Set(currentOrders.map(o => o.id));
+    if (newOnlineOrders.length > 0) {
+      showOnlineOrderAlert(newOnlineOrders[0]);
+    }
+    return;
+  }
+
+  // Find newly arrived online orders
+  const newlyArrived = newOnlineOrders.filter(o => !knownOnlineOrderIds.has(o.id));
+  newOnlineOrders.forEach(o => knownOnlineOrderIds.add(o.id));
+
+  if (newlyArrived.length > 0) {
+    showOnlineOrderAlert(newlyArrived[0]);
+  } else if (!hasNewOnline && activeAlertOrder) {
+    hideOnlineOrderAlert();
+  }
+}
+
+try {
+  if (typeof document?.addEventListener === 'function') {
+    document.addEventListener('click', () => {
+      if (window._posAudioCtx && window._posAudioCtx.state === 'suspended') {
+        window._posAudioCtx.resume().catch(() => {});
+      }
+    }, { once: false });
+  }
+} catch { /* ignore */ }
+
 async function refresh() {
   if (!state.token || state.refreshing) return;
   state.refreshing = true;
@@ -82,6 +226,7 @@ async function refresh() {
     renderAccounts();
     renderActive();
     totals();
+    checkIncomingOnlineOrders();
     if ($('#orders') && !$('#orders').hidden) await loadHistory();
   } catch (e) {
     connection(false);
@@ -914,6 +1059,35 @@ document.addEventListener('click', e => run(async () => {
   if (b.dataset.remove !== undefined && !state.pending) {
     state.cart.splice(Number(b.dataset.remove), 1);
     renderCart();
+  }
+
+  // Online Order Alert Actions
+  if (b.id === 'alertAcceptBtn' && activeAlertOrder) {
+    b.disabled = true;
+    try {
+      const orderId = activeAlertOrder.id;
+      await api('/api/pos/orders/' + orderId, 'PATCH', { status: 'PREPARING' });
+      notice(`تم قبول وبدء تجهيز الطلب #${orderId} بنجاح`);
+      hideOnlineOrderAlert();
+      await refresh();
+    } catch (err) {
+      notice(err.message);
+    } finally {
+      b.disabled = false;
+    }
+    return;
+  }
+
+  if (b.id === 'alertViewBtn') {
+    hideOnlineOrderAlert();
+    const liveBtn = document.querySelector('nav [data-tab="activeTab"]');
+    if (liveBtn) liveBtn.click();
+    return;
+  }
+
+  if (b.id === 'alertDismissBtn') {
+    hideOnlineOrderAlert();
+    return;
   }
 
   // Tab Navigation

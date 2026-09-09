@@ -36,6 +36,26 @@
   <!-- Notification Toast -->
   <div id="notice" role="status" hidden></div>
 
+  <!-- Prominent New Online Order Floating Alert -->
+  <aside id="onlineOrderAlert" class="online-order-alert" role="alert" hidden>
+    <div class="alert-pulse-icon"></div>
+    <div class="alert-body">
+      <div class="alert-header">
+        <span class="alert-tag">طلب أونلاين جديد</span>
+        <strong id="alertOrderNumber" class="alert-order-title">#0000</strong>
+        <span id="alertOrderFulfillment" class="alert-type-badge">دليفري</span>
+      </div>
+      <div class="alert-meta">
+        <span id="alertCustomerName">عميل أونلاين</span> • <strong id="alertOrderTotal">0.00 ج.م</strong>
+      </div>
+    </div>
+    <div class="alert-actions">
+      <button type="button" id="alertAcceptBtn" class="btn-alert-accept">قبول وبدء التجهيز</button>
+      <button type="button" id="alertViewBtn" class="btn-alert-view">عرض الطلب</button>
+      <button type="button" id="alertDismissBtn" class="btn-alert-dismiss" title="إغلاق التنبيه">×</button>
+    </div>
+  </aside>
+
   <!-- Tab 1: New Sale -->
   <main id="sale" class="tab">
     <section class="menu-section">

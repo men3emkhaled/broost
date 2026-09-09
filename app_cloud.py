@@ -12,6 +12,8 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineS
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--autoplay-policy=no-user-gesture-required")
+
 from core.pos_defaults import load_pos_defaults
 from core import config
 from core.cloud_setup import SetupWizard, apply_print_settings, setup_required
@@ -25,6 +27,15 @@ class Printer(QObject):
             return
         from core.printing import print_text_to_printer
         print_text_to_printer(html, self.parent())
+
+    @pyqtSlot()
+    def playAlert(self):
+        try:
+            import winsound
+            winsound.Beep(988, 150)
+            winsound.Beep(1319, 280)
+        except Exception:
+            QApplication.beep()
 
 
 class CloudPage(QWebEnginePage):

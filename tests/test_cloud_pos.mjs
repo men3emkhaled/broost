@@ -110,3 +110,17 @@ test('editOrder populates cart and sends edit_order_id upon submission',async()=
   assert.equal(h.run('state.cart.length'),0);
 });
 
+test('incoming online order triggers onlineOrderAlert and updates alert fields',async()=>{
+  const h=harness(async()=>({}));
+  h.run(`
+    state.data.orders=[
+      {id:42,source:'ONLINE',status:'NEW',fulfillment:'DELIVERY',customer_name:'سامح',total:280}
+    ];
+    checkIncomingOnlineOrders();
+  `);
+  assert.equal(h.get('#onlineOrderAlert').hidden, false);
+  assert.equal(h.get('#alertOrderNumber').textContent, '#42');
+  assert.equal(h.get('#alertCustomerName').textContent, 'سامح');
+  assert.equal(h.get('#alertOrderFulfillment').textContent, 'دليفري');
+});
+
