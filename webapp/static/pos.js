@@ -541,19 +541,86 @@ async function printReceipt(kitchen) {
   window.print();
 }
 
+function parsedLocalDate(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  const date = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getElapsedText(createdAt) {
+  const d = parsedLocalDate(createdAt);
+  if (!d) return 'الآن';
+  const diffSec = Math.max(0, Math.floor((new Date() - d) / 1000));
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+
+  if (diffHour > 0) return `${diffHour} س و ${diffMin % 60} د`;
+  if (diffMin > 0) return `${diffMin} دقيقة`;
+  return `${diffSec} ثانية`;
+}
+
+function getElapsedClass(createdAt) {
+  const d = parsedLocalDate(createdAt);
+  if (!d) return 'timer-normal';
+  const diffMin = Math.floor((new Date() - d) / 60000);
+  if (diffMin >= 30) return 'timer-danger';
+  if (diffMin >= 15) return 'timer-warning';
+  return 'timer-normal';
+}
+
+function getOrderDayInfo(createdAt) {
+  const d = parsedLocalDate(createdAt);
+  if (!d) return { key: 'unknown', label: 'طلبات جارية' };
+  const now = new Date();
+  const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = d.getFullYear() === yesterday.getFullYear() && d.getMonth() === yesterday.getMonth() && d.getDate() === yesterday.getDate();
+
+  const daysArabic = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  const dayName = daysArabic[d.getDay()];
+  const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (isToday) return { key, label: `اليوم — ${dayName} (${formatted})` };
+  if (isYesterday) return { key, label: `أمس — ${dayName} (${formatted})` };
+  return { key, label: `${dayName} — ${formatted}` };
+}
+
+function updateElapsedTimers() {
+  document.querySelectorAll?.('.order-card[data-order-card]').forEach(card => {
+    const id = card.dataset.orderCard;
+    const order = findOrder(id);
+    if (!order) return;
+    const badge = card.querySelector('.elapsed-badge');
+    if (badge) {
+      badge.innerHTML = `⏱️ ${getElapsedText(order.created_at)}`;
+      badge.className = `elapsed-badge ${getElapsedClass(order.created_at)}`;
+    }
+  });
+}
+
+setInterval(updateElapsedTimers, 10000);
+
 function orderCard(o) {
   const badgeClass = (o.status || '').toLowerCase();
   const canEdit = o.status !== 'CANCELLED';
   const isDelivery = o.fulfillment === 'DELIVERY';
+  const elapsedText = getElapsedText(o.created_at);
+  const elapsedClass = getElapsedClass(o.created_at);
 
   return `
-    <article class="order-card" data-order-card="${o.id}">
+    <article class="order-card status-${badgeClass}" data-order-card="${o.id}">
       <div class="order-card-header">
-        <div>
+        <div class="order-header-main">
           <span class="order-card-title">#${o.id} ${esc(o.public_number ? '(' + o.public_number + ')' : '')}</span>
-          <span class="order-card-source">${o.source === 'POS' ? 'صالة' : 'أونلاين'}</span>
+          <span class="order-type-badge ${isDelivery ? 'type-delivery' : 'type-pickup'}">${isDelivery ? 'دليفري' : 'صالة / سفري'}</span>
+          <span class="order-card-source">${o.source === 'POS' ? 'كاشير' : 'أونلاين'}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div class="order-header-meta">
+          <span class="elapsed-badge ${elapsedClass}" title="الوقت منذ إنشاء الطلب">⏱️ ${elapsedText}</span>
           <span class="order-badge ${badgeClass}">${esc(statusNames[o.status] || o.status)}</span>
           <strong class="order-card-total">${money(o.total)}</strong>
         </div>
@@ -594,7 +661,38 @@ function renderActive() {
   const btn = document.querySelector?.('.live-orders-btn');
   if (btn) btn.classList?.toggle?.('has-orders', count > 0);
   
-  const html = activeList.map(orderCard).join('') || '<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted)">لا توجد طلبات جارية قيد التنفيذ حالياً.</p>';
+  if (!activeList.length) {
+    if ($('#activeOrders')) {
+      $('#activeOrders').innerHTML = '<p style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted)">لا توجد طلبات جارية قيد التنفيذ حالياً.</p>';
+    }
+    return;
+  }
+
+  // Group active orders by day
+  const dayGroups = new Map();
+  activeList.forEach(o => {
+    const { key, label } = getOrderDayInfo(o.created_at);
+    if (!dayGroups.has(key)) {
+      dayGroups.set(key, { label, orders: [] });
+    }
+    dayGroups.get(key).orders.push(o);
+  });
+
+  let html = '';
+  for (const [_, group] of dayGroups) {
+    html += `
+      <section class="day-group">
+        <div class="day-header">
+          <span class="day-title">${esc(group.label)}</span>
+          <span class="day-badge">${group.orders.length} ${group.orders.length === 1 ? 'طلب' : 'طلبات'}</span>
+        </div>
+        <div class="order-grid">
+          ${group.orders.map(orderCard).join('')}
+        </div>
+      </section>
+    `;
+  }
+
   if ($('#activeOrders')) $('#activeOrders').innerHTML = html;
 }
 
@@ -692,21 +790,28 @@ async function editOrder(order) {
   const m = state.data?.menu;
   if (!m) return;
   const cart = order.items.map(line => {
-    const item = m.items.find(i => i.sync_id === line.menu_item_sync_id);
-    const offer = !item && m.offers.find(o => 'عرض: ' + o.name === line.item_name);
-    if (!item && !offer) throw new Error('الصنف لم يعد موجودًا في المنيو؛ راجع الإدارة قبل تعديل الفاتورة.');
+    const item = m.items.find(i => (line.menu_item_sync_id && i.sync_id === line.menu_item_sync_id) || i.name === line.item_name);
+    const offer = !item && m.offers.find(o => 'عرض: ' + o.name === line.item_name || o.name === line.item_name);
     const size = item && m.sizes.find(s => s.item_sync_id === item.sync_id && s.name === line.size_name);
     const extras = item ? m.extras.filter(e => e.item_sync_id === item.sync_id && (line.extras || []).some(x => x.name === e.name)) : [];
+    
+    let unitPrice = Number(line.unit_price || 0);
+    if (item) {
+      unitPrice = Number(item.base_price) + Number(size?.price_offset || 0) + extras.reduce((a, e) => a + Number(e.price), 0);
+    } else if (offer) {
+      unitPrice = Number(offer.offer_price);
+    }
+
     return {
-      name: item?.name || offer.name,
-      size: size?.name || 'عادي',
-      unit_price: Number(item?.base_price ?? offer.offer_price) + Number(size?.price_offset || 0) + extras.reduce((a, e) => a + Number(e.price), 0),
-      item_id: item?.sync_id || null,
+      name: item?.name || offer?.name || line.item_name,
+      size: size?.name || line.size_name || 'عادي',
+      unit_price: unitPrice || Number(line.unit_price || 0),
+      item_id: item?.sync_id || line.menu_item_sync_id || null,
       offer_id: offer?.sync_id || null,
       size_id: size?.sync_id || null,
       extra_ids: extras.map(e => e.sync_id),
       spicy: (line.extras || []).some(e => e.system_key === 'spicy'),
-      quantity: line.quantity
+      quantity: Number(line.quantity || 1)
     };
   });
 

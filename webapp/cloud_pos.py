@@ -164,8 +164,10 @@ def create_sale(payload: SaleInput):
         original=None
         if payload.edit_order_id:
             original=s.select_for_update(conn,'SELECT * FROM orders WHERE id=?',(payload.edit_order_id,))
-            if not original or original['source']!='POS' or original['status'] not in ('PREPARING','COMPLETED','DISPATCHED') or original['pos_shift_id']!=shift['id']:
-                raise HTTPException(409,'التعديل متاح لطلبات المطعم في الوردية الحالية ما لم تكن ملغاة')
+            if not original or original['status'] == 'CANCELLED':
+                raise HTTPException(404,'الطلب غير موجود أو ملغي ولا يمكن تعديله')
+            if original['pos_shift_id'] and original['pos_shift_id'] != shift['id']:
+                raise HTTPException(409,'التعديل متاح لطلبات الوردية الحالية فقط')
             if payload.expected_revision!=original['pos_revision']:
                 raise HTTPException(409,'الفاتورة اتغيرت؛ افتح أحدث نسخة قبل التعديل')
             if payload.fulfillment!=original['fulfillment']:
@@ -203,6 +205,11 @@ def create_sale(payload: SaleInput):
             for field in ('resume_token','client_request_id','source','created_at','pos_shift_id'):
                 values.pop(field,None)
             values['pos_revision']=original['pos_revision']+1
+            values['status']=original['status']
+            values['closed_at']=original['closed_at']
+            values['payment_status']=original['payment_status']
+            if not original['pos_shift_id']:
+                values['pos_shift_id']=shift['id']
             order_id=original['id']
             conn.execute(f"UPDATE orders SET {','.join(key+'=?' for key in values)} WHERE id=?",(*values.values(),order_id))
             conn.execute('DELETE FROM order_items WHERE order_id=?',(order_id,))
