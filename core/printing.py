@@ -59,8 +59,11 @@ def _find_physical_printer(selected_name):
     if not physical_printers:
         return None
 
-    # Prefer thermal/POS printers by name
-    thermal_keywords = ["pos", "thermal", "xp-", "receipt", "gp-", "sprt", "zjiang", "epson", "citizen", "star", "xprinter"]
+    # Prefer Rongta RP-350 and other thermal/POS printers by name
+    thermal_keywords = [
+        "rp350", "rp-350", "rongta", "rongeta", "rp326", "rp327", "rp330", "rp80",
+        "pos", "thermal", "xp-", "receipt", "gp-", "sprt", "zjiang", "epson", "citizen", "star", "xprinter", "80mm", "pos-80"
+    ]
     for p in physical_printers:
         p_name = p.printerName().lower()
         if any(tkw in p_name for tkw in thermal_keywords):
@@ -136,16 +139,38 @@ def print_text_to_printer(text_content, parent=None):
         ptr.setsize(mono_img.sizeInBytes())
         raw_bytes = bytes(ptr)
 
-        escpos_data = bytearray(b'\x1b\x40')
+        # Trim trailing blank lines to avoid paper waste (stops receipt from being too long)
+        last_non_empty_y = physical_height_px - 1
+        while last_non_empty_y > 0:
+            start = last_non_empty_y * bytes_per_line
+            if any(raw_bytes[start:start + width_bytes]):
+                break
+            last_non_empty_y -= 1
+
+        # Tiny safety breathing margin below content (8 dots ~ 1mm)
+        trimmed_height_px = min(physical_height_px, last_non_empty_y + 8)
+
+        # Build ESC/POS payload optimized for Rongta RP350 80mm
+        escpos_data = bytearray(b'\x1b\x40')  # ESC @ (Initialize printer)
+
+        # Kick RJ-11 cash drawer on customer/cashier receipts (ESC p 0 25 250)
+        is_kitchen = ("مطبخ" in text_content) or ("نسخة المطبخ" in text_content)
+        if not is_kitchen:
+            escpos_data.extend(b'\x1b\x70\x00\x19\xfa')
+
+        # GS v 0 (Raster bit image mode)
         escpos_data.extend(b'\x1d\x76\x30\x00')
         escpos_data.append(width_bytes % 256)
         escpos_data.append(width_bytes // 256)
-        escpos_data.append(physical_height_px % 256)
-        escpos_data.append(physical_height_px // 256)
-        for y in range(physical_height_px):
+        escpos_data.append(trimmed_height_px % 256)
+        escpos_data.append(trimmed_height_px // 256)
+        for y in range(trimmed_height_px):
             start = y * bytes_per_line
             escpos_data.extend(raw_bytes[start:start + width_bytes])
-        escpos_data.extend(b'\x1b\x64\x04')
+
+        # Feed minimal paper before cutter: 2 lines instead of 4 (Rongta RP350 cutter is close to thermal head)
+        escpos_data.extend(b'\x1b\x64\x02')
+        # Partial cut (GS V 1)
         escpos_data.extend(b'\x1d\x56\x01')
 
         hPrinter = win32print.OpenPrinter(printer_name)

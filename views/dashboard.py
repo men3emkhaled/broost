@@ -3085,8 +3085,8 @@ class MainPOSDashboard(QMainWindow):
             total_padding = "4px"
             qr_size = "50"
         else:
-            body_padding = "8px"
-            container_max_width = "400px" # larger and more spaced for 80mm
+            body_padding = "3px"
+            container_max_width = "380px"
             font_title = "15px"
             font_subtitle = "9.5px"
             font_info = "8.5px"
@@ -3094,12 +3094,12 @@ class MainPOSDashboard(QMainWindow):
             font_items_header = "9px"
             font_qty = "10px"
             font_grand_total = "13px"
-            font_kitchen_id = "20px"
-            font_kitchen_channel = "12px"
-            font_notes = "9px"
-            notes_padding = "8px"
-            total_padding = "8px"
-            qr_size = "70"
+            font_kitchen_id = "18px"
+            font_kitchen_channel = "11px"
+            font_notes = "8.5px"
+            notes_padding = "4px"
+            total_padding = "4px"
+            qr_size = "45"
 
         # Build layout receipt HTML string
         html = []
@@ -3110,25 +3110,25 @@ class MainPOSDashboard(QMainWindow):
         html.append(f"  .receipt-container {{ width: 100%; max-width: {container_max_width}; margin: 0 auto; padding: 0; }}")
         html.append("  .center { text-align: center; }")
         html.append("  .bold { font-weight: bold; }")
-        html.append("  .divider { border-top: 1px dashed #000000; margin: 8px 0; }")
-        html.append("  .solid-divider { border-top: 1px solid #000000; margin: 8px 0; }")
-        html.append("  .double-divider { border-top: 3px double #000000; margin: 8px 0; }")
-        html.append(f"  .title {{ font-size: {font_title}; font-weight: bold; color: #000000; margin: 4px 0; }}")
-        html.append(f"  .subtitle {{ font-size: {font_subtitle}; font-weight: bold; color: #000000; margin-bottom: 4px; }}")
-        html.append(f"  .info-table {{ margin: 6px 0; font-size: {font_info}; }}")
-        html.append("  .info-table td { padding: 2.5px 0; color: #000000; }")
-        html.append(f"  .items-table {{ border-collapse: collapse; margin: 8px 0; font-size: {font_items}; }}")
-        html.append(f"  .items-table th {{ border-bottom: 1.5px solid #000000; padding: 4px 0; font-weight: bold; color: #000000; font-size: {font_items_header}; }}")
-        html.append("  .items-table td { padding: 5px 0; vertical-align: top; color: #000000; }")
+        html.append("  .divider { border-top: 1px dashed #000000; margin: 3px 0; }")
+        html.append("  .solid-divider { border-top: 1px solid #000000; margin: 3px 0; }")
+        html.append("  .double-divider { border-top: 2px solid #000000; margin: 3px 0; }")
+        html.append(f"  .title {{ font-size: {font_title}; font-weight: bold; color: #000000; margin: 2px 0; }}")
+        html.append(f"  .subtitle {{ font-size: {font_subtitle}; font-weight: bold; color: #000000; margin-bottom: 2px; }}")
+        html.append(f"  .info-table {{ margin: 3px 0; font-size: {font_info}; }}")
+        html.append("  .info-table td { padding: 1.5px 0; color: #000000; }")
+        html.append(f"  .items-table {{ border-collapse: collapse; margin: 4px 0; font-size: {font_items}; }}")
+        html.append(f"  .items-table th {{ border-bottom: 1.5px solid #000000; padding: 2.5px 0; font-weight: bold; color: #000000; font-size: {font_items_header}; }}")
+        html.append("  .items-table td { padding: 2.5px 0; vertical-align: top; color: #000000; }")
         html.append("  .item-row { border-bottom: 1px dashed #000000; }")
         html.append(f"  .item-qty {{ font-size: {font_qty}; font-weight: bold; color: #000000; }}")
         html.append("  .item-name { font-weight: bold; }")
         html.append("  .item-price { font-weight: bold; }")
-        html.append("  .extras { font-size: 9px; color: #000000; padding-right: 8px; margin-top: 1px; }")
+        html.append("  .extras { font-size: 8.5px; color: #000000; padding-right: 6px; margin-top: 1px; }")
         html.append("  .spicy { font-weight: bold; }")
-        html.append(f"  .notes-box {{ border: 1.5px solid #000000; padding: {notes_padding}; margin: 8px 0; font-size: {font_notes}; font-weight: bold; color: #000000; background-color: #ffffff; }}")
-        html.append(f"  .grand-total {{ font-size: {font_grand_total}; font-weight: bold; color: #000000; border: 2.5px solid #000000; padding: {total_padding}; margin: 10px 0; background-color: #ffffff; text-align: center; }}")
-        html.append(f"  .kitchen-id {{ font-size: {font_kitchen_id}; font-weight: bold; background-color: #ffffff; border: 2.5px solid #000000; padding: {total_padding}; margin: 8px 0; text-align: center; }}")
+        html.append(f"  .notes-box {{ border: 1.5px solid #000000; padding: {notes_padding}; margin: 4px 0; font-size: {font_notes}; font-weight: bold; color: #000000; background-color: #ffffff; }}")
+        html.append(f"  .grand-total {{ font-size: {font_grand_total}; font-weight: bold; color: #000000; border: 2px solid #000000; padding: {total_padding}; margin: 4px 0; background-color: #ffffff; text-align: center; }}")
+        html.append(f"  .kitchen-id {{ font-size: {font_kitchen_id}; font-weight: bold; background-color: #ffffff; border: 2px solid #000000; padding: {total_padding}; margin: 4px 0; text-align: center; }}")
         html.append(f"  .kitchen-channel {{ font-size: {font_kitchen_channel}; font-weight: bold; color: #000000; }}")
         html.append("</style>")
         html.append("</head>")
@@ -3211,15 +3211,14 @@ class MainPOSDashboard(QMainWindow):
             # CASHIER/CUSTOMER RECEIPT LAYOUT
             # ─────────────────────────────────────────────
             html.append("<div class='center'>")
-            html.append("<div class='title'>فاتورة الطلب</div>")
+            html.append("<div class='title'>بروست — BROOST</div>")
             html.append(f"<div class='subtitle'>{copy_title}</div>")
+            html.append(f"<div style='font-size: 9.5px; margin: 1px 0;'>هاتف: {config.RESTAURANT_LANDLINE} · {config.RESTAURANT_MOBILE}</div>")
             html.append("</div>")
             
-            html.append("<div class='double-divider'></div>")
+            html.append("<div class='divider'></div>")
             html.append("<table class='info-table' width='100%'>")
             html.append(f"<tr><td align='left' width='55%'>{invoice_number}</td><td class='bold' align='right' width='45%'>رقم الفاتورة:</td></tr>")
-            html.append(f"<tr><td align='left' width='55%' dir='ltr' style='font-size: 13px; font-weight: bold;'>{config.RESTAURANT_LANDLINE}</td><td class='bold' align='right' width='45%'>الخط الأرضي:</td></tr>")
-            html.append(f"<tr><td align='left' width='55%' dir='ltr' style='font-size: 13px; font-weight: bold;'>{config.RESTAURANT_MOBILE}</td><td class='bold' align='right' width='45%'>رقم الموبايل:</td></tr>")
             html.append(f"<tr><td align='left' width='55%'>{o_data[7]}</td><td class='bold' align='right' width='45%'>التاريخ والوقت:</td></tr>")
             
             if o_data[1] == 'DELIVERY':
@@ -3279,36 +3278,8 @@ class MainPOSDashboard(QMainWindow):
             html.append(f"الإجمالي الكلي: {total:.2f} ج.م")
             html.append("</div>")
             
-            # Load QR image and encode to Base64 to prevent broken images
-            import base64
-            qr_file_path = None
-            for path in [
-                os.path.join(os.path.dirname(sys.executable), "facebook-qr.jpeg") if getattr(sys, 'frozen', False) else None,
-                os.path.join(getattr(sys, '_MEIPASS', ''), "facebook-qr.jpeg") if hasattr(sys, '_MEIPASS') else None,
-                os.path.join(database.BASE_DIR, "facebook-qr.jpeg"),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "facebook-qr.jpeg")
-            ]:
-                if path and os.path.exists(path):
-                    qr_file_path = path
-                    break
-            
-            qr_img_src = ""
-            if qr_file_path:
-                try:
-                    with open(qr_file_path, "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                        qr_img_src = f"data:image/jpeg;base64,{encoded_string}"
-                except Exception:
-                    pass
-            
-            if not qr_img_src:
-                qr_img_src = f"file:///{os.path.join(database.BASE_DIR, 'facebook-qr.jpeg').replace('\\', '/')}"
-
-            # Facebook QR Code Image at the end
-            html.append("<div class='center' style='margin-top: 10px;'>")
-            html.append(f"  <img src='{qr_img_src}' width='{qr_size}' height='{qr_size}'/>")
-            html.append("  <div style='font-size: 11px; font-weight: bold; margin-top: 6px; color: #000000;'>تابعنا هنا علشان كل جديد</div>")
-            html.append("</div>")
+            html.append("<div class='divider'></div>")
+            html.append("<div class='center' style='font-size: 10px; margin-top: 4px;'>شكراً لزيارتكم — نظام بروست السحابي</div>")
 
         html.append("</div>")
         html.append("</body>")

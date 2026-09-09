@@ -1916,24 +1916,30 @@ dialog::backdrop {
   #receiptDialog {
     display: block !important;
     position: static;
-    width: 80mm;
+    width: 72mm;
+    max-width: 72mm;
+    margin: 0 auto;
     max-height: none;
     padding: 0;
     box-shadow: none;
+    border: none;
+    background: #fff;
   }
   #receiptDialog .receipt-actions-bar,
   #receiptDialog > small {
-    display: none;
+    display: none !important;
   }
   #receipt {
     padding: 0;
+    margin: 0;
     border: none;
+    background: #fff;
   }
   dialog::backdrop {
     display: none;
   }
   @page {
     size: 80mm auto;
-    margin: 3mm;
+    margin: 0;
   }
 }

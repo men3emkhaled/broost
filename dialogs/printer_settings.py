@@ -158,7 +158,15 @@ class PrinterSettingsDialog(QDialog):
 
             # Set dropdown
             if not saved_online or not saved_printer:
-                self.printer_dropdown.setCurrentIndex(0)
+                # Try auto-detecting Rongta RP350 / 80mm thermal printer
+                matched_idx = -1
+                rongta_kws = ("rp350", "rp-350", "rongta", "rongeta", "rp326", "rp327", "rp330", "rp80", "80mm", "pos", "thermal")
+                for i in range(1, self.printer_dropdown.count()):
+                    pname = self.printer_dropdown.itemText(i).lower()
+                    if any(kw in pname for kw in rongta_kws):
+                        matched_idx = i
+                        break
+                self.printer_dropdown.setCurrentIndex(matched_idx if matched_idx > 0 else 0)
             else:
                 index = self.printer_dropdown.findText(saved_printer)
                 if index >= 0:

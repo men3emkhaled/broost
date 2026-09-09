@@ -510,14 +510,259 @@ if ($('#checkout')) {
 }
 
 function receiptHtml(order, kitchen = false) {
-  const lines = order.items.map(i => `
-    <tr>
-      <td>${esc(i.item_name)}<br><small>${esc(i.size_name)} ${esc((i.extras || []).map(e => e.name).join('، '))}</small></td>
-      <td>${i.quantity}</td>
-      ${kitchen ? '' : `<td>${money(i.quantity * i.unit_price)}</td>`}
-    </tr>
-  `).join('');
-  return `<html dir="rtl"><head><meta charset="utf-8"><style>body{font-family:Tahoma;text-align:center;font-size:12px}table{width:100%;border-collapse:collapse}td{padding:6px;border-bottom:1px solid #ddd}small{font-size:10px}h2{font-size:20px}</style></head><body><h2>بروست</h2><h3>${kitchen ? 'نسخة المطبخ' : 'فاتورة العميل'} #${order.id}</h3><p>${esc(order.public_number)}<br>${esc(order.created_at)}</p><p>${esc(order.customer_name)}<br>${esc(order.customer_phone)}<br>${esc(order.area_name)} ${esc(order.detailed_address)}</p><table>${lines}</table>${kitchen ? '' : `<p>الأصناف ${money(order.subtotal)}<br>الخصم ${money(order.discount)}<br>التوصيل ${money(order.delivery_fee)}</p><h2>الإجمالي ${money(order.total)}</h2><p>${esc({ CASH: 'نقدي', WALLET: 'محفظة', VISA: 'فيزا' }[order.payment_method])} · ${esc(statusNames[order.status])}</p><p>الباقي ${money(order.change_due)}</p>`}<p>${esc(order.notes)}</p><p>الكاشير: ${esc(order.cashier_name)}</p><p>0552802874 · 01092453841</p></body></html>`;
+  const isDelivery = order.fulfillment === 'DELIVERY';
+  const invoiceNumber = `#${order.id}${order.public_number ? ' (' + esc(order.public_number) + ')' : ''}`;
+
+  if (kitchen) {
+    const kitchenItemsHtml = (order.items || []).map(i => {
+      const extList = (i.extras || []).map(e => (typeof e === 'object' ? e.name : e)).filter(Boolean);
+      const hasSpicy = (i.extras || []).some(e => e.system_key === 'spicy' || (e.name && e.name.includes('حار'))) || (i.item_name && i.item_name.includes('حار'));
+      const spicyBadge = hasSpicy ? ' <span class="spicy">[حار]</span>' : '';
+      const extHtml = extList.length ? `<div class="extras">+ إضافات: ${esc(extList.join('، '))}</div>` : '';
+      return `
+        <tr class="item-row">
+          <td align="left" width="25%" class="item-qty">x${i.quantity}</td>
+          <td align="right" width="75%">
+            <span class="item-name">${esc(i.item_name)}${i.size_name && i.size_name !== 'عادي' ? ' (' + esc(i.size_name) + ')' : ''}</span>${spicyBadge}
+            ${extHtml}
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <html dir="rtl">
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @media print {
+            @page { margin: 0; size: 80mm auto; }
+            body { margin: 0; padding: 2px 4px; }
+          }
+          body {
+            font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
+            direction: rtl;
+            text-align: right;
+            margin: 0 auto;
+            padding: 4px;
+            width: 72mm;
+            max-width: 72mm;
+            color: #000;
+            background: #fff;
+            font-weight: bold;
+            font-size: 11.5px;
+            line-height: 1.25;
+          }
+          .receipt-container { width: 100%; margin: 0 auto; }
+          .center { text-align: center; }
+          .bold { font-weight: bold; }
+          .title { font-size: 16px; font-weight: 900; margin: 1px 0; color: #000; }
+          .subtitle { font-size: 12px; font-weight: bold; margin: 1px 0; color: #000; }
+          .kitchen-id {
+            font-size: 18px;
+            font-weight: 900;
+            border: 2px solid #000;
+            padding: 3px 6px;
+            margin: 4px 0;
+            text-align: center;
+            background: #fff;
+          }
+          .kitchen-channel { font-size: 12px; font-weight: 800; margin-bottom: 2px; color: #000; }
+          .divider { border-top: 1px dashed #000; margin: 4px 0; }
+          .info-table { width: 100%; border-collapse: collapse; margin: 3px 0; font-size: 11px; }
+          .info-table td { padding: 1.5px 0; color: #000; }
+          .items-table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 12px; }
+          .items-table th { border-bottom: 1.2px solid #000; padding: 3px 0; font-weight: bold; font-size: 11.5px; color: #000; }
+          .items-table td { padding: 3px 0; vertical-align: top; color: #000; }
+          .item-row { border-bottom: 1px dashed #000; }
+          .item-qty { font-size: 15px; font-weight: 900; color: #000; }
+          .item-name { font-weight: bold; }
+          .spicy { color: #000; font-weight: 900; }
+          .extras { font-size: 10px; padding-right: 6px; margin-top: 1px; color: #222; }
+          .notes-box {
+            border: 1.5px solid #000;
+            padding: 4px;
+            margin: 4px 0;
+            font-size: 11px;
+            font-weight: 900;
+            background: #fff;
+            text-align: right;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="receipt-container">
+          <div class="center">
+            <div class="title">بروست — BROOST</div>
+            <div class="subtitle">نسخة المطبخ</div>
+            <div class="kitchen-id">طلب رقم ${invoiceNumber}</div>
+            <div class="kitchen-channel">${isDelivery ? 'دليفري توصيل' : 'صالة / تيك أواي'}</div>
+          </div>
+          <div class="divider"></div>
+          <table class="info-table">
+            <tr><td align="left" width="60%">${esc(order.created_at || '')}</td><td class="bold" align="right" width="40%">تاريخ الطلب:</td></tr>
+            <tr><td align="left" width="60%">${esc(order.customer_name || (isDelivery ? 'عميل دليفري' : 'عميل الصالة'))}</td><td class="bold" align="right" width="40%">العميل:</td></tr>
+            ${isDelivery && order.customer_phone ? `<tr><td align="left" width="60%" dir="ltr" style="text-align:left">${esc(order.customer_phone)}</td><td class="bold" align="right" width="40%">التليفون:</td></tr>` : ''}
+            ${isDelivery && (order.area_name || order.detailed_address) ? `<tr><td align="left" width="60%">${esc(order.area_name || '')} ${esc(order.detailed_address || '')}</td><td class="bold" align="right" width="40%">العنوان:</td></tr>` : ''}
+          </table>
+          ${order.notes ? `<div class="notes-box">⚠️ تنبيه للمطبخ:<br/>${esc(order.notes)}</div>` : ''}
+          <table class="items-table">
+            <tr>
+              <th align="left" width="25%">الكمية</th>
+              <th align="right" width="75%">الصنف</th>
+            </tr>
+            ${kitchenItemsHtml}
+          </table>
+          <div class="divider"></div>
+          <div class="center subtitle bold" style="margin-top: 4px;">يرجى تحضير الطعام بأسرع وقت!</div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+
+  // Customer / Cashier Compact 80mm Receipt
+  const customerItemsHtml = (order.items || []).map(i => {
+    const extList = (i.extras || []).map(e => (typeof e === 'object' ? e.name : e)).filter(Boolean);
+    const hasSpicy = (i.extras || []).some(e => e.system_key === 'spicy' || (e.name && e.name.includes('حار'))) || (i.item_name && i.item_name.includes('حار'));
+    const spicyBadge = hasSpicy ? ' <span class="spicy">[حار]</span>' : '';
+    const extHtml = extList.length ? `<div class="extras">+ إضافات: ${esc(extList.join('، '))}</div>` : '';
+    const lineTotal = money(i.quantity * i.unit_price);
+    return `
+      <tr class="item-row">
+        <td align="left" width="28%" class="item-price">${lineTotal}</td>
+        <td align="center" width="14%" class="item-qty">${i.quantity}</td>
+        <td align="right" width="58%">
+          <span class="item-name">${esc(i.item_name)}${i.size_name && i.size_name !== 'عادي' ? ' (' + esc(i.size_name) + ')' : ''}</span>${spicyBadge}
+          ${extHtml}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const hasExtraTotals = Number(order.delivery_fee || 0) > 0 || Number(order.discount || 0) > 0;
+
+  return `
+    <html dir="rtl">
+    <head>
+      <meta charset="utf-8">
+      <style>
+        @media print {
+          @page { margin: 0; size: 80mm auto; }
+          body { margin: 0; padding: 2px 4px; }
+        }
+        body {
+          font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
+          direction: rtl;
+          text-align: right;
+          margin: 0 auto;
+          padding: 4px;
+          width: 72mm;
+          max-width: 72mm;
+          color: #000;
+          background: #fff;
+          font-weight: bold;
+          font-size: 11.5px;
+          line-height: 1.25;
+        }
+        .receipt-container { width: 100%; margin: 0 auto; }
+        .center { text-align: center; }
+        .bold { font-weight: bold; }
+        .title { font-size: 16px; font-weight: 900; margin: 1px 0; color: #000; }
+        .contact-line { font-size: 10.5px; margin: 1px 0; color: #000; }
+        .divider { border-top: 1px dashed #000; margin: 4px 0; }
+        .solid-divider { border-top: 1.2px solid #000; margin: 4px 0; }
+        .info-table { width: 100%; border-collapse: collapse; margin: 3px 0; font-size: 11px; }
+        .info-table td { padding: 1.5px 0; color: #000; }
+        .items-table { width: 100%; border-collapse: collapse; margin: 4px 0; font-size: 11.5px; }
+        .items-table th { border-bottom: 1.2px solid #000; padding: 3px 0; font-weight: bold; font-size: 11.5px; color: #000; }
+        .items-table td { padding: 2.5px 0; vertical-align: top; color: #000; }
+        .item-row { border-bottom: 1px dashed #000; }
+        .item-qty { font-size: 12px; font-weight: 900; color: #000; text-align: center; }
+        .item-name { font-weight: bold; }
+        .item-price { font-weight: 900; text-align: left; }
+        .extras { font-size: 9.5px; color: #222; padding-right: 5px; margin-top: 1px; }
+        .spicy { color: #000; font-weight: bold; }
+        .notes-box {
+          border: 1px solid #000;
+          padding: 3px 5px;
+          margin: 3px 0;
+          font-size: 10.5px;
+          font-weight: bold;
+          background: #fff;
+        }
+        .grand-total {
+          font-size: 14.5px;
+          font-weight: 900;
+          color: #000;
+          border: 1.5px solid #000;
+          padding: 4px 6px;
+          margin: 4px 0;
+          background: #fff;
+          text-align: center;
+        }
+        .footer-contact { font-size: 10px; text-align: center; margin-top: 4px; color: #222; }
+      </style>
+    </head>
+    <body>
+      <div class="receipt-container">
+        <div class="center">
+          <div class="title">بروست — BROOST</div>
+          <div class="contact-line">هاتف: 0552802874 · 01092453841</div>
+        </div>
+        <div class="divider"></div>
+        <table class="info-table">
+          <tr>
+            <td align="left" width="50%">${esc(order.created_at || '')}</td>
+            <td class="bold" align="right" width="50%">فاتورة: ${invoiceNumber}</td>
+          </tr>
+          <tr>
+            <td align="left" width="50%">${esc(order.customer_name || (isDelivery ? 'عميل دليفري' : 'صالة / سفري'))}</td>
+            <td class="bold" align="right" width="50%">النوع: ${isDelivery ? 'دليفري' : 'صالة / سفري'}</td>
+          </tr>
+          ${isDelivery && order.customer_phone ? `<tr><td align="left" width="60%" dir="ltr" style="text-align:left">${esc(order.customer_phone)}</td><td class="bold" align="right" width="40%">التليفون:</td></tr>` : ''}
+          ${isDelivery && (order.area_name || order.detailed_address) ? `<tr><td align="left" width="60%">${esc(order.area_name || '')} ${esc(order.detailed_address || '')}</td><td class="bold" align="right" width="40%">العنوان:</td></tr>` : ''}
+        </table>
+        <div class="divider"></div>
+        <table class="items-table">
+          <tr>
+            <th align="left" width="28%">الإجمالي</th>
+            <th align="center" width="14%">العدد</th>
+            <th align="right" width="58%">الوجبة</th>
+          </tr>
+          ${customerItemsHtml}
+        </table>
+        ${hasExtraTotals ? `
+          <div class="solid-divider"></div>
+          <table class="info-table">
+            <tr><td align="left" width="50%">${money(order.subtotal)}</td><td class="bold" align="right" width="50%">الأصناف:</td></tr>
+            ${Number(order.delivery_fee || 0) > 0 ? `<tr><td align="left" width="50%">${money(order.delivery_fee)}</td><td class="bold" align="right" width="50%">رسوم التوصيل:</td></tr>` : ''}
+            ${Number(order.discount || 0) > 0 ? `<tr><td align="left" width="50%">-${money(order.discount)}</td><td class="bold" align="right" width="50%">الخصم:</td></tr>` : ''}
+          </table>
+        ` : '<div class="solid-divider"></div>'}
+        <div class="grand-total">
+          الإجمالي الكلي: ${money(order.total)}
+        </div>
+        <table class="info-table">
+          <tr>
+            <td align="left" width="50%">${esc({ CASH: 'نقدي (كاش)', WALLET: 'محفظة إلكترونية', VISA: 'فيزا / بطاقة' }[order.payment_method] || order.payment_method || 'نقدي')}</td>
+            <td class="bold" align="right" width="50%">طريقة الدفع:</td>
+          </tr>
+          ${Number(order.cash_received || 0) > 0 && Number(order.change_due || 0) > 0 ? `
+            <tr>
+              <td align="left" width="50%">${money(order.change_due)} (المدفوع: ${money(order.cash_received)})</td>
+              <td class="bold" align="right" width="50%">الباقي:</td>
+            </tr>
+          ` : ''}
+        </table>
+        ${order.notes ? `<div class="notes-box">ملاحظة: ${esc(order.notes)}</div>` : ''}
+        ${order.cashier_name ? `<div style="font-size:10px;text-align:center;margin:2px 0;">الكاشير: ${esc(order.cashier_name)}</div>` : ''}
+        <div class="divider"></div>
+        <div class="footer-contact">شكراً لزيارتكم — نظام بروست السحابي</div>
+      </div>
+    </body>
+    </html>
+  `;
 }
 
 function showReceipt(order) {
@@ -1261,7 +1506,7 @@ if ($('#next')) {
 }
 
 if ($('#printReceipt')) $('#printReceipt').onclick = () => printReceipt(false);
-if ($('#printKitchen')) $('#printKitchen').onclick = () => printKitchen(true);
+if ($('#printKitchen')) $('#printKitchen').onclick = () => printReceipt(true);
 
 if ($('#clearCart')) {
   $('#clearCart').onclick = () => run(async () => {

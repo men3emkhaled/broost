@@ -257,6 +257,14 @@ class SetupWizard(QWizard):
         index = self.printers.findText(previous)
         if index >= 0:
             self.printers.setCurrentIndex(index)
+        else:
+            # Auto-detect Rongta RP350 / 80mm thermal receipt printer
+            rongta_kws = ("rp350", "rp-350", "rongta", "rongeta", "rp326", "rp327", "rp330", "rp80", "80mm", "pos", "thermal", "receipt")
+            for i in range(self.printers.count()):
+                pname = self.printers.itemText(i).lower()
+                if any(kw in pname for kw in rongta_kws):
+                    self.printers.setCurrentIndex(i)
+                    break
         self.invalidate_print()
 
     def invalidate_print(self, *args):
