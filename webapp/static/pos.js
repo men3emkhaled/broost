@@ -656,10 +656,10 @@ function updateElapsedTimers() {
 
 setInterval(updateElapsedTimers, 10000);
 
-function orderCard(o) {
+function orderCard(o, inHistory = false) {
   const badgeClass = (o.status || '').toLowerCase();
   const isClosed = o.status === 'COMPLETED' || o.status === 'CANCELLED';
-  const canEdit = !isClosed;
+  const canEdit = !isClosed && !inHistory;
   const isDelivery = o.fulfillment === 'DELIVERY';
   const elapsedText = getElapsedText(o.created_at);
   const elapsedClass = getElapsedClass(o.created_at);
@@ -694,11 +694,11 @@ function orderCard(o) {
         <button type="button" data-receipt="${o.id}">طباعة</button>
         ${canEdit ? `<button type="button" class="btn-edit" data-edit="${o.id}">تعديل الطلب</button>` : ''}
         ${o.has_payment_proof ? `<button type="button" data-proof="${o.id}">إثبات التحويل</button>` : ''}
-        ${o.status === 'NEW' ? `<button type="button" data-status="PREPARING" data-id="${o.id}">قبول وتجهيز</button>` : ''}
-        ${o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">جاهز للاستلام</button>` : ''}
-        ${['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">خروج للتوصيل</button>` : ''}
-        ${['PREPARING', 'READY', 'DISPATCHED'].includes(o.status) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">${isDelivery ? 'تم التسليم' : 'تم الاستلام'}</button>` : ''}
-        ${!isClosed ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
+        ${!inHistory && o.status === 'NEW' ? `<button type="button" data-status="PREPARING" data-id="${o.id}">قبول وتجهيز</button>` : ''}
+        ${!inHistory && o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">جاهز للاستلام</button>` : ''}
+        ${!inHistory && ['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">خروج للتوصيل</button>` : ''}
+        ${!inHistory && ['PREPARING', 'READY', 'DISPATCHED'].includes(o.status) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">${isDelivery ? 'تم التسليم' : 'تم الاستلام'}</button>` : ''}
+        ${!inHistory && !isClosed ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
       </div>
     </article>
   `;
@@ -803,7 +803,7 @@ function renderHistory() {
           <span class="day-total">إجمالي: <strong>${money(daySum)}</strong></span>
         </div>
         <div class="order-grid">
-          ${group.orders.map(orderCard).join('')}
+          ${group.orders.map(o => orderCard(o, true)).join('')}
         </div>
       </section>
     `;

@@ -196,6 +196,21 @@ test('orderCard hides edit and cancel buttons for completed and cancelled orders
   })`);
   assert(preparingHtml.includes('تعديل الطلب'));
   assert(preparingHtml.includes('إلغاء الطلب'));
+
+  const historyHtml = h.run(`orderCard({
+    id: 101,
+    status: 'PREPARING',
+    fulfillment: 'DELIVERY',
+    source: 'ONLINE',
+    customer_name: 'علي',
+    total: 215,
+    items: [{ item_name: 'وجبة', quantity: 1, unit_price: 200 }]
+  }, true)`);
+  assert(historyHtml.includes('طباعة'));
+  assert(!historyHtml.includes('تعديل الطلب'));
+  assert(!historyHtml.includes('إلغاء الطلب'));
+  assert(!historyHtml.includes('خروج للتوصيل'));
+  assert(!historyHtml.includes('تم التسليم'));
 });
 
 
