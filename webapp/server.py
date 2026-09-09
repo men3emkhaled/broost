@@ -752,23 +752,8 @@ def validate_order_changes(order: sqlite3.Row, changes: dict[str, Any]) -> None:
         raise HTTPException(status_code=409, detail=detail)
 
     fulfillment = order["fulfillment"]
-    if fulfillment == "DELIVERY" and requested_status == "READY":
-        raise HTTPException(
-            status_code=409,
-            detail="طلب الدليفري يصبح جاهزًا ويخرج للتوصيل عند تكليف الطيار من السيستم",
-        )
     if fulfillment == "PICKUP" and requested_status == "DISPATCHED":
-        raise HTTPException(status_code=409, detail="طلب الاستلام من المطعم لا يخرج مع طيار")
-    if fulfillment == "DELIVERY" and requested_status == "DISPATCHED":
-        driver_name = str(changes.get("driver_name") or order["driver_name"] or "").strip()
-        if not driver_name:
-            raise HTTPException(status_code=409, detail="اختيار الطيار إجباري قبل خروج الطلب")
-    if (
-        fulfillment == "DELIVERY"
-        and requested_status == "COMPLETED"
-        and current_status != "DISPATCHED"
-    ):
-        raise HTTPException(status_code=409, detail="طلب الدليفري لا يكتمل قبل تكليف الطيار")
+        raise HTTPException(status_code=409, detail="طلب الاستلام من المطعم لا يخرج للتوصيل")
 
     effective_payment = requested_payment or current_payment
     if (

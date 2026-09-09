@@ -432,7 +432,7 @@ function orderCard(o) {
         ${o.status === 'NEW' ? `<button type="button" data-status="PREPARING" data-id="${o.id}">قبول وتجهيز</button>` : ''}
         ${o.status === 'PREPARING' && !isDelivery ? `<button type="button" data-status="READY" data-id="${o.id}">جاهز للاستلام</button>` : ''}
         ${['PREPARING', 'READY'].includes(o.status) && isDelivery ? `<button type="button" class="btn-dispatch" data-status="DISPATCHED" data-id="${o.id}">خروج للتوصيل</button>` : ''}
-        ${(o.status === 'DISPATCHED' || (!isDelivery && ['PREPARING', 'READY'].includes(o.status))) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">تم التسليم</button>` : ''}
+        ${['PREPARING', 'READY', 'DISPATCHED'].includes(o.status) ? `<button type="button" class="btn-complete" data-status="COMPLETED" data-id="${o.id}">${isDelivery ? 'تم التسليم' : 'تم الاستلام'}</button>` : ''}
         ${o.status !== 'CANCELLED' ? `<button type="button" data-status="CANCELLED" data-id="${o.id}" style="color:#dc2626">إلغاء الطلب</button>` : ''}
       </div>
     </article>

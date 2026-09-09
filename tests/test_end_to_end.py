@@ -1285,26 +1285,17 @@ class BroostEndToEndTest(unittest.TestCase):
             {"status": "PREPARING"},
             admin=True,
         )
-        with self.assertRaises(urllib.error.HTTPError) as separate_ready:
-            self.request(
-                f"/api/admin/orders/{canonical_remote['id']}",
-                "PATCH",
-                {"status": "READY"},
-                admin=True,
-            )
-        self.assertEqual(separate_ready.exception.code, 409)
-        with self.assertRaises(urllib.error.HTTPError) as dispatch_without_driver:
-            self.request(
-                f"/api/admin/orders/{canonical_remote['id']}",
-                "PATCH",
-                {"status": "DISPATCHED"},
-                admin=True,
-            )
-        self.assertEqual(dispatch_without_driver.exception.code, 409)
+        ready = self.request(
+            f"/api/admin/orders/{canonical_remote['id']}",
+            "PATCH",
+            {"status": "READY"},
+            admin=True,
+        )
+        self.assertEqual(ready["status"], "READY")
         dispatched = self.request(
             f"/api/admin/orders/{canonical_remote['id']}",
             "PATCH",
-            {"status": "DISPATCHED", "driver_name": "طيار اختبار"},
+            {"status": "DISPATCHED"},
             admin=True,
         )
         self.assertEqual(dispatched["status"], "DISPATCHED")
@@ -1318,6 +1309,44 @@ class BroostEndToEndTest(unittest.TestCase):
             admin=True,
         )
         self.assertEqual(completed["status"], "COMPLETED")
+
+        # Verify delivery order can be COMPLETED directly from PREPARING with zero driver checks
+        direct_delivery = self.request(
+            "/api/orders",
+            "POST",
+            {
+                "client_request_id": "e2e-direct-delivery-comp-0003",
+                "fulfillment": "DELIVERY",
+                "payment_method": "CASH",
+                "customer_name": "عميل تسليم مباشر",
+                "customer_phone": "01055556666",
+                "area_id": area["id"],
+                "detailed_address": "عنوان مباشر",
+                "notes": "",
+                "redeem_reward": False,
+                "items": [{
+                    "item_id": item["sync_id"], "quantity": 1, "size_id": None,
+                    "extra_ids": [], "spicy": False,
+                }],
+            },
+        )
+        direct_remote = next(
+            row for row in self.request("/api/admin/orders", admin=True)
+            if row["public_number"] == direct_delivery["public_number"]
+        )
+        self.request(
+            f"/api/admin/orders/{direct_remote['id']}",
+            "PATCH",
+            {"status": "PREPARING"},
+            admin=True,
+        )
+        direct_completed = self.request(
+            f"/api/admin/orders/{direct_remote['id']}",
+            "PATCH",
+            {"status": "COMPLETED"},
+            admin=True,
+        )
+        self.assertEqual(direct_completed["status"], "COMPLETED")
 
     def test_concurrent_reward_reservation_allows_only_one_order(self):
         manager = OnlineSyncManager()

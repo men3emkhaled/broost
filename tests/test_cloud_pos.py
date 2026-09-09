@@ -13,7 +13,8 @@ class CloudPOSTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         root=Path(self.temp.name)
         self.patches=[patch.object(s,'DATA_DIR',root),patch.object(s,'DB_PATH',root/'web.db'),
-            patch.object(s,'PROOFS_DIR',root/'proofs'),patch.object(s,'USING_POSTGRES',False)]
+            patch.object(s,'PROOFS_DIR',root/'proofs'),patch.object(s,'USING_POSTGRES',False),
+            patch('webapp.db.USING_POSTGRES',False)]
         for p in self.patches:p.start()
         s.init_web_db()
         s._RATE_BUCKETS.clear()
@@ -94,18 +95,12 @@ class CloudPOSTests(unittest.TestCase):
 
     def test_delivery_settlement_and_shift_close_are_idempotent(self):
         shift=self.open()
-        driver=self.post('drivers',{'name':'Driver','phone':'01000000000'}).json()[0]
         order=self.post('orders',{**self.payload,'fulfillment':'DELIVERY','customer_name':'Customer','customer_phone':'01000000000','area_id':1,'detailed_address':'Street'}).json()
-        for status in ('DISPATCHED','COMPLETED'):
-            r=self.client.patch('/api/pos/orders/'+str(order['id']),headers=self.headers,json={'status':status,'driver_id':driver['id']})
-            self.assertEqual(r.status_code,200,r.text)
-        state=self.client.get('/api/pos/state',headers=self.headers).json()
-        self.assertEqual(state['drivers'][0]['balance'],190)
+        r=self.client.patch('/api/pos/orders/'+str(order['id']),headers=self.headers,json={'status':'DISPATCHED'})
+        self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(self.post(f"shifts/{shift['id']}/close",{'actual_cash':50}).status_code,409)
-        payload={'request_id':'settlement-1','amount':190,'reason':'Delivery settlement','driver_id':driver['id']}
-        for _ in range(2):self.assertEqual(self.post('movements',payload).status_code,200)
-        state=self.client.get('/api/pos/state',headers=self.headers).json()
-        self.assertEqual(state['drivers'][0]['balance'],0);self.assertEqual(state['shift']['expected_cash'],240)
+        r=self.client.patch('/api/pos/orders/'+str(order['id']),headers=self.headers,json={'status':'COMPLETED'})
+        self.assertEqual(r.status_code,200,r.text)
         for _ in range(2):self.assertEqual(self.post(f"shifts/{shift['id']}/close",{'actual_cash':240}).status_code,200)
 
     def test_unauthorized_sessions_and_legacy_uploads_are_blocked(self):

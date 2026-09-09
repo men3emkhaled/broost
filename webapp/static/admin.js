@@ -421,9 +421,17 @@ function statusActions(order) {
     return `<span class="badge badge-warning">أكد التحويل قبل التجهيز</span>${cancel}`;
   }
   if (order.status === "NEW") return `<button class="btn btn-small btn-primary" data-order-status="PREPARING" data-order-id="${order.id}">تأكيد وبدء التجهيز</button>${cancel}`;
-  if (["ACCEPTED", "PREPARING", "READY"].includes(order.status) && order.fulfillment === "DELIVERY") return `<span class="badge badge-brand">جاهز وخرج للدليفري عند تكليف الطيار من السيستم</span>${cancel}`;
-  if (["ACCEPTED", "PREPARING"].includes(order.status)) return `<button class="btn btn-small btn-primary" data-order-status="READY" data-order-id="${order.id}">الطلب جاهز</button>${cancel}`;
-  if (order.status === "READY") return `<button class="btn btn-small btn-primary" data-order-status="COMPLETED" data-order-id="${order.id}">تم الاستلام</button>${cancel}`;
+  if (["ACCEPTED", "PREPARING"].includes(order.status)) {
+    const readyBtn = `<button class="btn btn-small btn-primary" data-order-status="READY" data-order-id="${order.id}">الطلب جاهز</button>`;
+    const dispatchBtn = order.fulfillment === "DELIVERY" ? `<button class="btn btn-small btn-primary" data-order-status="DISPATCHED" data-order-id="${order.id}">خروج للتوصيل</button>` : '';
+    const completeBtn = `<button class="btn btn-small btn-primary" data-order-status="COMPLETED" data-order-id="${order.id}">${order.fulfillment === "DELIVERY" ? "تم التسليم" : "تم الاستلام"}</button>`;
+    return `${readyBtn}${dispatchBtn}${completeBtn}${cancel}`;
+  }
+  if (order.status === "READY") {
+    const dispatchBtn = order.fulfillment === "DELIVERY" ? `<button class="btn btn-small btn-primary" data-order-status="DISPATCHED" data-order-id="${order.id}">خروج للتوصيل</button>` : '';
+    const completeBtn = `<button class="btn btn-small btn-primary" data-order-status="COMPLETED" data-order-id="${order.id}">${order.fulfillment === "DELIVERY" ? "تم التسليم" : "تم الاستلام"}</button>`;
+    return `${dispatchBtn}${completeBtn}${cancel}`;
+  }
   if (order.status === "DISPATCHED") return `<button class="btn btn-small btn-primary" data-order-status="COMPLETED" data-order-id="${order.id}">تم التسليم</button>${cancel}`;
   return "";
 }
