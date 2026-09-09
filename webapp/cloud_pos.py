@@ -175,13 +175,13 @@ def create_sale(payload: SaleInput):
         original=None
         if payload.edit_order_id:
             original=s.select_for_update(conn,'SELECT * FROM orders WHERE id=?',(payload.edit_order_id,))
-            if not original or original['status'] == 'CANCELLED':
-                raise HTTPException(404,'الطلب غير موجود أو ملغي ولا يمكن تعديله')
+            if not original or original['status'] in ('COMPLETED', 'CANCELLED'):
+                raise HTTPException(400 if original else 404, 'الطلب غير موجود أو مكتمل/ملغي ولا يمكن تعديله')
             if original['pos_shift_id'] and original['pos_shift_id'] != shift['id']:
-                raise HTTPException(409,'التعديل متاح لطلبات الوردية الحالية فقط')
-            if payload.expected_revision!=original['pos_revision']:
-                raise HTTPException(409,'الفاتورة اتغيرت؛ افتح أحدث نسخة قبل التعديل')
-            if payload.fulfillment!=original['fulfillment']:
+                raise HTTPException(409,'لا يمكن تعديل فاتورة من وردية سابقة')
+            if original['pos_revision'] != payload.expected_revision:
+                raise HTTPException(409,'تم تعديل الفاتورة من جهاز آخر؛ حدّث القائمة أولًا')
+            if original['fulfillment'] != payload.fulfillment:
                 raise HTTPException(409,'نوع الفاتورة المحفوظة لا يتغير؛ ألغها وأنشئ طلبًا جديدًا عند الحاجة')
         phone=s.normalize_phone(payload.customer_phone)
         if phone and not s.valid_egyptian_mobile(phone):
@@ -207,9 +207,9 @@ def create_sale(payload: SaleInput):
                 'customer_phone':phone,'customer_phone_normalized':phone,'area_id':payload.area_id if fee or area_name else None,
                 'area_name':area_name,'detailed_address':s.strip_area_prefix(address,area_name),
                 'payment_method':payload.payment_method,'payment_status':'CONFIRMED' if payload.fulfillment=='PICKUP' or payload.payment_method!='CASH' else 'CASH_ON_DELIVERY',
-                'status':'COMPLETED' if payload.fulfillment=='PICKUP' else 'PREPARING','subtotal':subtotal,'delivery_fee':fee,
+                'status':'PREPARING','subtotal':subtotal,'delivery_fee':fee,
                 'discount':payload.discount,'total':total,'notes':payload.notes,'cashier_name':shift['cashier_name'],
-                'created_at':created,'updated_at':now,'closed_at':now if payload.fulfillment=='PICKUP' else None,
+                'created_at':created,'updated_at':now,'closed_at':None,
                 'pos_shift_id':shift['id'],'cash_received':cash if payload.payment_method=='CASH' and payload.fulfillment=='PICKUP' else None,
                 'change_due':round(cash-total,2) if payload.payment_method=='CASH' and payload.fulfillment=='PICKUP' else 0}
         if original:

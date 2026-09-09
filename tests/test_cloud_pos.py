@@ -143,6 +143,39 @@ class CloudPOSTests(unittest.TestCase):
         hist_miss = self.client.get('/api/pos/history?q=nonexistent', headers=self.headers).json()
         self.assertEqual(len(hist_miss), 0)
 
+    def test_pos_order_starts_active_and_leaves_active_when_completed(self):
+        self.open()
+        order = self.post('orders', self.payload).json()
+        self.assertEqual(order['status'], 'PREPARING')
+        self.assertIsNone(order['closed_at'])
+
+        # Active orders in state include this new order
+        state = self.client.get('/api/pos/state', headers=self.headers).json()
+        active_ids = [o['id'] for o in state['orders']]
+        self.assertIn(order['id'], active_ids)
+
+        # Cashier marks order as completed (تم الاستلام)
+        patch_res = self.client.patch(f"/api/pos/orders/{order['id']}", headers=self.headers, json={'status': 'COMPLETED'})
+        self.assertEqual(patch_res.status_code, 200)
+        completed_order = patch_res.json()
+        self.assertEqual(completed_order['status'], 'COMPLETED')
+        self.assertIsNotNone(completed_order['closed_at'])
+
+        # Order has left active orders in state
+        state_after = self.client.get('/api/pos/state', headers=self.headers).json()
+        active_ids_after = [o['id'] for o in state_after['orders']]
+        self.assertNotIn(order['id'], active_ids_after)
+
+        # Attempting to edit a completed order is rejected
+        edit_attempt = self.post('orders', {
+            **self.payload,
+            'request_id': 'edit-after-complete',
+            'edit_order_id': order['id'],
+            'expected_revision': order['pos_revision'],
+            'discount': 20
+        })
+        self.assertIn(edit_attempt.status_code, (400, 404))
+
 
 if __name__=='__main__':unittest.main()
 
