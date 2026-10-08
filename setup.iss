@@ -9,6 +9,8 @@ AppName=BROOST Offline
 AppVersion=2.2.0
 AppPublisher=Men3em Khaled
 DefaultDirName={localappdata}\Programs\BROOST Offline
+DisableDirPage=no
+UsePreviousAppDir=no
 DefaultGroupName=BROOST Offline
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -29,7 +31,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#ReleaseSourceDir}\*"; DestDir: "{app}"; Excludes: "broost_pos.db,backups\*,.last_backup_date"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\BROOST Offline"; Filename: "{app}\CashierSystemGuard.exe"
+Name: "{group}\BROOST Offline"; Filename: "{app}\CashierSystemGuard.exe"; WorkingDir: "{app}"
 Name: "{userdesktop}\BROOST Offline"; Filename: "{app}\CashierSystemGuard.exe"; WorkingDir: "{app}"
 
 [Run]

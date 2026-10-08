@@ -39,12 +39,26 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $PWD 'release_offline\Broost_Offline_Setup_2.2.exe'
           if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'BroostOfflineTest'
-          $setup = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir" -PassThru -Wait -WindowStyle Hidden
+          if (-not (Test-Path -LiteralPath 'D:\')) { throw 'Runner has no D: drive for alternate-drive test' }
+          $installDir = 'D:\BROOST Offline Test'
+          $setupArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$installDir`""
+          $setup = Start-Process -FilePath $installer -ArgumentList $setupArgs -PassThru -Wait -WindowStyle Hidden
           if ($setup.ExitCode -ne 0) { throw "Installer exit code $($setup.ExitCode)" }
           $appPath = Join-Path $installDir 'BroostPOS.exe'
+          $guardPath = Join-Path $installDir 'CashierSystemGuard.exe'
           if (-not (Test-Path -LiteralPath $appPath)) { throw 'Installed POS not found' }
+          if (-not (Test-Path -LiteralPath $guardPath)) { throw 'Installed launcher not found' }
+          if (-not @(Get-ChildItem -LiteralPath $installDir -Filter 'unins*.exe').Count) { throw 'Uninstaller not found' }
           if (Test-Path -LiteralPath (Join-Path $installDir 'BroostWebServer.exe')) { throw 'Cloud server found in offline installer' }
+          $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'BROOST Offline.lnk'
+          $menuLink = Join-Path ([Environment]::GetFolderPath('Programs')) 'BROOST Offline\BROOST Offline.lnk'
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($link in @($desktopLink, $menuLink)) {
+            if (-not (Test-Path -LiteralPath $link)) { throw "Shortcut missing: $link" }
+            $shortcut = $shell.CreateShortcut($link)
+            if ($shortcut.TargetPath -ne $guardPath) { throw "Shortcut target mismatch: $link -> $($shortcut.TargetPath)" }
+            if ($shortcut.WorkingDirectory -ne $installDir) { throw "Shortcut working directory mismatch: $link" }
+          }
           $env:QT_QPA_PLATFORM = 'offscreen'
           $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru -WindowStyle Hidden
           try {
