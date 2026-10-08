@@ -1,7 +1,68 @@
 # -*- coding: utf-8 -*-
 """Broost POS - Thermal Printer Utilities"""
 from PyQt6.QtWidgets import QMessageBox
+import ctypes
 import html
+import os
+
+
+def _write_raw_receipt(printer_name: str, payload: bytes) -> None:
+    """Send ESC/POS bytes to the Windows spooler without a Python extension."""
+    if os.name != "nt":
+        raise OSError("Raw receipt printing requires Windows")
+
+    from ctypes import wintypes
+
+    class DocInfo(ctypes.Structure):
+        _fields_ = [
+            ("pDocName", wintypes.LPWSTR),
+            ("pOutputFile", wintypes.LPWSTR),
+            ("pDatatype", wintypes.LPWSTR),
+        ]
+
+    spooler = ctypes.WinDLL("winspool.drv", use_last_error=True)
+    spooler.OpenPrinterW.argtypes = [wintypes.LPWSTR, ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p]
+    spooler.OpenPrinterW.restype = wintypes.BOOL
+    spooler.StartDocPrinterW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(DocInfo)]
+    spooler.StartDocPrinterW.restype = wintypes.DWORD
+    spooler.StartPagePrinter.argtypes = [wintypes.HANDLE]
+    spooler.StartPagePrinter.restype = wintypes.BOOL
+    spooler.WritePrinter.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                     ctypes.POINTER(wintypes.DWORD)]
+    spooler.WritePrinter.restype = wintypes.BOOL
+    spooler.EndPagePrinter.argtypes = [wintypes.HANDLE]
+    spooler.EndPagePrinter.restype = wintypes.BOOL
+    spooler.EndDocPrinter.argtypes = [wintypes.HANDLE]
+    spooler.EndDocPrinter.restype = wintypes.BOOL
+    spooler.ClosePrinter.argtypes = [wintypes.HANDLE]
+    spooler.ClosePrinter.restype = wintypes.BOOL
+
+    def checked(result):
+        if not result:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return result
+
+    handle = wintypes.HANDLE()
+    checked(spooler.OpenPrinterW(printer_name, ctypes.byref(handle), None))
+    doc_started = False
+    page_started = False
+    try:
+        doc_info = DocInfo("Broost POS Receipt", None, "RAW")
+        checked(spooler.StartDocPrinterW(handle, 1, ctypes.byref(doc_info)))
+        doc_started = True
+        checked(spooler.StartPagePrinter(handle))
+        page_started = True
+        buffer = ctypes.create_string_buffer(payload)
+        written = wintypes.DWORD()
+        checked(spooler.WritePrinter(handle, buffer, len(payload), ctypes.byref(written)))
+        if written.value != len(payload):
+            raise IOError(f"Printer accepted {written.value} of {len(payload)} bytes")
+    finally:
+        if page_started:
+            spooler.EndPagePrinter(handle)
+        if doc_started:
+            spooler.EndDocPrinter(handle)
+        spooler.ClosePrinter(handle)
 
 # Virtual/file-based printers that should NEVER be used
 VIRTUAL_KEYWORDS = ["pdf", "xps", "onenote", "writer", "fax", "virtual", "send to", "microsoft print"]
@@ -77,7 +138,6 @@ def print_text_to_printer(text_content, parent=None):
     try:
         from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QImage, QPainter, QTextDocument
-        import win32print
         import math
 
         printer_info = get_physical_printer()
@@ -173,19 +233,7 @@ def print_text_to_printer(text_content, parent=None):
         # Partial cut (GS V 1)
         escpos_data.extend(b'\x1d\x56\x01')
 
-        hPrinter = win32print.OpenPrinter(printer_name)
-        try:
-            win32print.StartDocPrinter(hPrinter, 1, ("Broost POS Receipt", None, "RAW"))
-            try:
-                win32print.StartPagePrinter(hPrinter)
-                written = win32print.WritePrinter(hPrinter, bytes(escpos_data))
-                win32print.EndPagePrinter(hPrinter)
-                if written != len(escpos_data):
-                    raise IOError(f"Printer accepted {written} of {len(escpos_data)} bytes")
-            finally:
-                win32print.EndDocPrinter(hPrinter)
-        finally:
-            win32print.ClosePrinter(hPrinter)
+        _write_raw_receipt(printer_name, bytes(escpos_data))
 
         return True
     except Exception as e:

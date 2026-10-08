@@ -1,79 +1,15 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-import urllib.error
-import urllib.request
-import subprocess
-import threading
-import time
 from PyQt6.QtWidgets import QApplication, QSplashScreen, QWidget, QVBoxLayout, QLabel, QProgressBar, QFrame
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 
 import database
-from core.runtime_health import install_runtime_protection, log_runtime_message
+from core.runtime_health import install_runtime_protection
 
 
 install_runtime_protection()
-_SERVER_CHECK_LOCK = threading.Lock()
-_LAST_SERVER_START = 0.0
-
-
-def ensure_web_server_started():
-    """Start the local server when its port is down; safe to call repeatedly."""
-    global _LAST_SERVER_START
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8765/health", timeout=0.8) as response:
-            if response.status == 200:
-                return True
-    except (OSError, urllib.error.URLError):
-        pass
-
-    # A one-file executable needs a few seconds to unpack. Do not spawn copies
-    # while the previous recovery attempt is still starting.
-    now = time.monotonic()
-    if now - _LAST_SERVER_START < 15:
-        return False
-
-    if getattr(sys, "frozen", False):
-        command = [os.path.join(database.BASE_DIR, "BroostWebServer.exe")]
-    else:
-        command = [sys.executable, os.path.join(database.BASE_DIR, "run_web.py")]
-
-    if not os.path.exists(command[-1]):
-        log_runtime_message("local-server", f"missing executable: {command[-1]}")
-        return False
-
-    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    try:
-        subprocess.Popen(
-            command,
-            cwd=database.BASE_DIR,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        _LAST_SERVER_START = now
-        log_runtime_message("local-server", "recovery start requested")
-        return True
-    except OSError as exc:
-        log_runtime_message("local-server", f"could not start: {exc}")
-        return False
-
-
-def ensure_web_server_started_async():
-    """Probe/recover the local site without ever pausing the cashier UI."""
-    if not _SERVER_CHECK_LOCK.acquire(blocking=False):
-        return
-
-    def worker():
-        try:
-            ensure_web_server_started()
-        finally:
-            _SERVER_CHECK_LOCK.release()
-
-    threading.Thread(target=worker, daemon=True, name="local-server-watchdog").start()
 
 class POSSplashScreen(QSplashScreen):
     def __init__(self):
@@ -172,27 +108,16 @@ if __name__ == "__main__":
     # Keep the shared memory reference alive
     app.shared_memory = shared_memory
 
-    # Recover the local web server throughout the whole cashier session.
-    # Start this only after the single-instance lock succeeds.
-    local_server_watchdog = QTimer(app)
-    local_server_watchdog.timeout.connect(ensure_web_server_started_async)
-    local_server_watchdog.start(8000)
-    app.local_server_watchdog = local_server_watchdog
-    ensure_web_server_started_async()
-    
     # Set custom window icon (prefer .ico on Windows for crisp taskbar/title bar)
     logo_ico = os.path.join(database.BASE_DIR, "logo.ico")
-    logo_png = os.path.join(database.BASE_DIR, "logo.png")
     if os.path.exists(logo_ico):
         app.setWindowIcon(QIcon(logo_ico))
-    elif os.path.exists(logo_png):
-        app.setWindowIcon(QIcon(logo_png))
         
     # Start and show splash screen
     splash = POSSplashScreen()
     splash.show()
     
-    splash.set_message("جاري الاتصال بقاعدة البيانات والتحقق منها...", 15)
+    splash.set_message("جاري تجهيز قاعدة البيانات المحلية والتحقق منها...", 15)
     
     database.init_db()
     splash.set_message("جاري إعداد النسخ الاحتياطي وحماية البيانات...", 45)

@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from core.time_utils import legacy_utc_to_local_db_timestamp
-from core.pos_defaults import load_pos_defaults, normalize_server_url
 
 if getattr(sys, 'frozen', False):
     # Bundled executable path
@@ -18,7 +17,7 @@ DB_PATH = os.path.join(BASE_DIR, "broost_pos.db")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 
 def get_connection():
-    # WAL lets background website sync work without blocking normal cashier reads.
+    # WAL keeps cashier reads responsive while local backup and reports run.
     connection = sqlite3.connect(DB_PATH, timeout=30.0)
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA foreign_keys=ON")
@@ -32,7 +31,6 @@ def _add_column_if_missing(cursor, table_name, column_name, column_type):
         cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 def init_db():
-    pos_defaults = load_pos_defaults()
     conn = get_connection()
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
@@ -246,90 +244,18 @@ def init_db():
     cursor.execute("UPDATE offers SET sync_id='offer-' || id WHERE sync_id IS NULL OR sync_id=''")
     cursor.execute("UPDATE offer_items SET sync_id='offer-item-' || id WHERE sync_id IS NULL OR sync_id=''")
     cursor.execute("UPDATE orders SET source='POS' WHERE source IS NULL OR source=''")
-    # Keep deletion tombstones until Railway confirms that the matching POS
-    # mirror was removed.  Without this, deleting the local row loses the only
-    # identifier that can tell the online dashboard to remove it too.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pos_order_deletions (
-            local_order_id INTEGER PRIMARY KEY,
-            deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_delete
-        BEFORE DELETE ON orders
-        WHEN COALESCE(OLD.source, 'POS') = 'POS'
-        BEGIN
-            INSERT OR REPLACE INTO pos_order_deletions (local_order_id, deleted_at)
-            VALUES (OLD.id, CURRENT_TIMESTAMP);
-        END
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pending_remote_actions (
-            action_key TEXT PRIMARY KEY,
-            action_type TEXT NOT NULL,
-            remote_id INTEGER NOT NULL,
-            changes_json TEXT NOT NULL,
-            context_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT NOT NULL DEFAULT ''
-        )
-    """)
-    _add_column_if_missing(cursor, "pending_remote_actions", "revision", "INTEGER NOT NULL DEFAULT 0")
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pending_remote_actions_created "
-        "ON pending_remote_actions(created_at)"
-    )
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pos_order_sync_queue (
-            local_order_id INTEGER PRIMARY KEY,
-            queued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # Replace the old second-resolution tokens. Two edits within one second
-    # must remain distinguishable while a network upload is in flight.
+    # Remove the retired website queues and their write triggers. Invoices,
+    # menu items and local customer data are unaffected.
     for trigger in (
-        "trg_queue_pos_order_insert", "trg_queue_pos_order_update",
-        "trg_queue_pos_item_insert", "trg_queue_pos_item_update", "trg_queue_pos_item_delete",
+        "trg_queue_pos_order_delete", "trg_queue_pos_order_insert",
+        "trg_queue_pos_order_update", "trg_queue_pos_item_insert",
+        "trg_queue_pos_item_update", "trg_queue_pos_item_delete",
+        "trg_clear_deleted_order_queue",
     ):
         cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_insert AFTER INSERT ON orders BEGIN
-            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
-        END
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_order_update AFTER UPDATE ON orders BEGIN
-            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
-        END
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_insert AFTER INSERT ON order_items BEGIN
-            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
-        END
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_update AFTER UPDATE ON order_items BEGIN
-            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (NEW.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
-        END
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_queue_pos_item_delete AFTER DELETE ON order_items BEGIN
-            INSERT OR REPLACE INTO pos_order_sync_queue(local_order_id, queued_at)
-            VALUES (OLD.order_id, strftime('%Y-%m-%d %H:%M:%f', 'now') || ':' || hex(randomblob(16)));
-        END
-    """)
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS trg_clear_deleted_order_queue AFTER DELETE ON orders BEGIN
-            DELETE FROM pos_order_sync_queue WHERE local_order_id=OLD.id;
-        END
-    """)
-    cursor.execute("DELETE FROM pos_order_sync_queue WHERE local_order_id NOT IN (SELECT id FROM orders)")
+    for table in ("pending_remote_actions", "pos_order_sync_queue",
+                  "pos_order_deletions"):
+        cursor.execute(f"DROP TABLE IF EXISTS {table}")
     cursor.execute(
         "UPDATE orders SET online_status='PREPARING' "
         "WHERE source='ONLINE' AND online_status='ACCEPTED'"
@@ -381,30 +307,11 @@ def init_db():
                      ("cashier_1_name", "DR OMAR"), ("cashier_1_pin", "1111"),
                      ("printer_paper_width", "80"), ("printer_font_size", "normal"),
                      ("selected_printer", ""),
-                     ("master_password", "9999"),
-                     ("web_sync_enabled", "1"),
-                     ("web_server_url", pos_defaults["server_url"]),
-                     ("web_sync_key", pos_defaults["sync_key"]),
-                     ("web_sync_epoch", ""),
-                     ("web_last_event_id", "0"),
-                     ("web_menu_version", "0"),
-                     ("web_menu_fingerprint", ""),
-                     ("web_initial_orders_queued", "0"),
-                     ("web_initial_orders_synced", "0")]:
+                     ("master_password", "9999")]:
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
 
-    # Upgrade existing installations too; INSERT OR IGNORE preserves old URLs.
-    saved_url = cursor.execute(
-        "SELECT value FROM settings WHERE key='web_server_url'"
-    ).fetchone()[0] or ""
-    migrated_url = normalize_server_url(saved_url)
-    if migrated_url != saved_url.strip().rstrip("/"):
-        cursor.execute("UPDATE settings SET value=? WHERE key='web_server_url'", (migrated_url,))
-        # Reconcile history with the new destination, retaining remote identities.
-        cursor.execute(
-            "UPDATE settings SET value='0' WHERE key IN "
-            "('web_initial_orders_queued', 'web_initial_orders_synced')"
-        )
+    # Never carry a website connection into the local-only edition.
+    cursor.execute("DELETE FROM settings WHERE key LIKE 'web_%'")
     
     # Auto-update old defaults to 9999 if they haven't been customized yet
     cursor.execute("UPDATE settings SET value='9999' WHERE key='app_password' AND value='123'")
@@ -423,8 +330,6 @@ def init_db():
     cleanup_legacy_mock_data(conn)
     seed_reference_data(conn)
     conn.close()
-    from core.operational_reset import reset_sqlite_operations
-    reset_sqlite_operations(DB_PATH, pos_defaults)
 
 def repair_legacy_online_timestamps(conn):
     """One-time repair for website UTC values that older sync code saved as local time."""

@@ -254,8 +254,6 @@ class DriversAdminDialog(QDialog):
             if self.parent() and hasattr(self.parent(), 'ensure_active_shift'):
                 self.parent().ensure_active_shift()
                 self.parent().load_pending_delivery_orders()
-                if hasattr(self.parent(), "online_sync"):
-                    self.parent().online_sync.poll()
 
     def toggle_driver(self, driver_id, currently_active):
         new_state = 0 if currently_active else 1

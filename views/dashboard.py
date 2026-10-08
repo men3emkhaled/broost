@@ -4,9 +4,7 @@ import os
 import sys
 import json
 import re
-import sqlite3
 import threading
-import time
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QPoint, QEvent, QProcess
@@ -17,7 +15,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QTabWidget, QApplication, QTextEdit, QSizePolicy,
     QSplitter, QGraphicsBlurEffect, QFileDialog
 )
-from PyQt6.QtGui import QIcon, QFont, QPixmap
+from PyQt6.QtGui import QIcon, QFont
 
 import database
 from styles import STYLE_SHEET
@@ -25,7 +23,6 @@ from core import config
 from core.printing import print_text_to_printer
 from core.display_text import pos_text
 from core.time_utils import elapsed_minutes
-from widgets.title_bar import CustomTitleBar
 from dialogs.login import LoginDialog, PasswordVerificationDialog
 from dialogs.item_picker import ItemDetailsPickerDialog
 from dialogs.drivers import DriversAdminDialog
@@ -34,10 +31,8 @@ from dialogs.reports import ReportsDialog
 from dialogs.shift import ShiftClosingDialog, ShiftSummaryReportDialog
 from dialogs.receipt import ReceiptSimDialog
 from dialogs.order_edit import OrderEditDialog
-from dialogs.online_order import OnlineOrderAlertDialog, CustomerCancelledOrderAlertDialog
 from dialogs.daily_offers import DailyOffersDialog
 from dialogs.customers import CustomersAdminDialog
-from core.online_sync import OnlineSyncManager
 from core.order_finance import cancel_and_reconcile, reconcile_order_finance, validate_invoice_amounts
 
 
@@ -458,7 +453,6 @@ class VirtualKeyboardWidget(QWidget):
 class MainPOSDashboard(QMainWindow):
     """Main Restaurant checkout dashboard window."""
 
-    online_order_action_finished = pyqtSignal(str, object, object)
     print_job_finished = pyqtSignal(bool, str)
     printer_detection_finished = pyqtSignal(object, object)
     backup_finished = pyqtSignal(bool, str, bool)
@@ -472,13 +466,13 @@ class MainPOSDashboard(QMainWindow):
         
         # Screen resolution check
         screen = QApplication.primaryScreen()
-        screen_size = screen.size() if screen else None
+        screen_size = screen.availableGeometry().size() if screen else None
         self.is_small_screen = False
         if screen_size and (screen_size.width() <= 1366 or screen_size.height() <= 768):
             self.is_small_screen = True
             
         if self.is_small_screen:
-            self.setMinimumSize(1024, 660)
+            self.setMinimumSize(900, 560)
             small_screen_styles = """
                 * {
                     font-size: 11px;
@@ -501,7 +495,7 @@ class MainPOSDashboard(QMainWindow):
             """
             self.setStyleSheet(STYLE_SHEET + small_screen_styles)
         else:
-            self.setMinimumSize(1024, 700)
+            self.setMinimumSize(900, 560)
             self.setStyleSheet(STYLE_SHEET)
             
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -537,9 +531,16 @@ class MainPOSDashboard(QMainWindow):
         self._pending_refresh_timer.setSingleShot(True)
         self._pending_refresh_timer.timeout.connect(self.load_pending_delivery_orders)
         self.ensure_active_shift()
-        self._current_cat_id = "offers"
+        conn = database.get_connection()
+        try:
+            first_category = conn.execute(
+                "SELECT id FROM categories ORDER BY sort_order, id LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        self._current_cat_id = first_category[0] if first_category else "offers"
         self.load_categories()
-        self.load_menu_items("offers")
+        self.load_menu_items(self._current_cat_id)
         self.load_pending_delivery_orders(force=True)
         
         # Periodic check for delayed active orders (every 5 seconds)
@@ -579,27 +580,9 @@ class MainPOSDashboard(QMainWindow):
         self.printer_detection_finished.connect(self._finish_printer_detection)
         self.auto_detect_printer_on_startup()
 
-        # Website synchronization runs in a background thread and never blocks
-        # cashier operations when the internet is unavailable.
-        self._online_alert_queue = []
-        self._online_alert_open = False
-        self._online_order_actions = set()
-        self.online_order_action_finished.connect(self._finish_online_order_action)
         self._printer_job_lock = threading.Lock()
         self._pending_print_jobs = 0
         self.print_job_finished.connect(self._finish_print_job)
-        self.online_sync = OnlineSyncManager(self)
-        self.online_sync.connectivity_changed.connect(self.update_online_sync_status)
-        self.online_sync.order_received.connect(self.handle_online_order_received)
-        self.online_sync.order_updated.connect(self.handle_online_order_updated)
-        self.online_sync.menu_applied.connect(self.reload_menu_after_online_sync)
-        self.online_sync.queued_action_completed.connect(self._finish_queued_online_action)
-        self.online_sync.queued_action_failed.connect(self._fail_queued_online_action)
-        self.online_sync.queue_changed.connect(self._update_sync_queue_count)
-        self.online_sync_timer = QTimer(self)
-        self.online_sync_timer.timeout.connect(self.online_sync.poll)
-        self.online_sync_timer.start(5000)
-        QTimer.singleShot(500, self.online_sync.poll)
 
     # Custom resize and mouse drag handlers are no longer needed as we use native Windows OS frames now.
 
@@ -650,25 +633,9 @@ class MainPOSDashboard(QMainWindow):
         brand_icon = QLabel(brand_block)
         icon_size = 31 if self.is_small_screen else 38
         brand_icon.setFixedSize(icon_size, icon_size)
-        logo_path = os.path.join(database.BASE_DIR, "logo.png")
+        logo_path = os.path.join(database.BASE_DIR, "logo.ico")
         if os.path.exists(logo_path):
-            logo_pixmap = QPixmap(logo_path)
-            # The source logo contains a large white artboard. Crop to the real mark
-            # before scaling so it stays bold and legible in the compact header.
-            crop = logo_pixmap.copy(
-                int(logo_pixmap.width() * 0.24),
-                int(logo_pixmap.height() * 0.17),
-                int(logo_pixmap.width() * 0.52),
-                int(logo_pixmap.height() * 0.66),
-            )
-            brand_icon.setPixmap(
-                crop.scaled(
-                    icon_size,
-                    icon_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+            brand_icon.setPixmap(QIcon(logo_path).pixmap(icon_size, icon_size))
         brand_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         brand_layout.addWidget(brand_icon)
 
@@ -691,23 +658,6 @@ class MainPOSDashboard(QMainWindow):
         self.btn_printer_status.setStyleSheet(f"QPushButton {{ background-color: #eef9f2; color: #157347; border: 1px solid #a7d9bd; border-radius: 10px; padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }}")
         self.btn_printer_status.clicked.connect(self.open_printer_settings)
         header_layout.addWidget(self.btn_printer_status)
-
-        self.lbl_online_sync = QLabel("● جاري ربط الموقع", self.header_bar)
-        self.lbl_online_sync.setObjectName("SyncStatusBadge")
-        self.lbl_online_sync.setFixedSize(header_control_w, header_control_h)
-        self.lbl_online_sync.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(self.lbl_online_sync)
-
-        self.btn_sync_retry = QPushButton("↻", self.header_bar)
-        self.btn_sync_retry.setFixedSize(header_control_h, header_control_h)
-        self.btn_sync_retry.setToolTip("إعادة محاولة مزامنة الموقع الآن")
-        self.btn_sync_retry.setStyleSheet(
-            "QPushButton { background:#ffffff; color:#166534; border:1px solid #bbdfc5; "
-            "border-radius:10px; font-size:18px; font-weight:900; padding:0; } "
-            "QPushButton:hover { background:#eef9f2; }"
-        )
-        self.btn_sync_retry.clicked.connect(self.retry_online_sync)
-        header_layout.addWidget(self.btn_sync_retry)
 
         self.btn_notifications = QPushButton("🔔 0", self.header_bar)
         self.btn_notifications.setFixedSize(58 if self.is_small_screen else 82, header_control_h)
@@ -757,30 +707,40 @@ class MainPOSDashboard(QMainWindow):
         btn_drivers_mgr.setObjectName("BtnBlue")
         btn_drivers_mgr.clicked.connect(self.open_drivers_management)
         header_layout.addWidget(btn_drivers_mgr)
+        if self.is_small_screen:
+            btn_drivers_mgr.hide()
         
         btn_menu_mgr = QPushButton("المنيو" if self.is_small_screen else "🔧 إدارة المنيو", self.header_bar)
         btn_menu_mgr.setFixedSize(header_control_w, header_control_h)
         btn_menu_mgr.setObjectName("BtnDark")
         btn_menu_mgr.clicked.connect(self.open_menu_management)
         header_layout.addWidget(btn_menu_mgr)
+        if self.is_small_screen:
+            btn_menu_mgr.hide()
         
         btn_reports = QPushButton("التقارير" if self.is_small_screen else "📊 لوحة التقارير", self.header_bar)
         btn_reports.setFixedSize(header_control_w, header_control_h)
         btn_reports.setObjectName("BtnOrange")
         btn_reports.clicked.connect(self.open_reports_dialog)
         header_layout.addWidget(btn_reports)
+        if self.is_small_screen:
+            btn_reports.hide()
         
-        self.btn_backup = QPushButton("نسخة" if self.is_small_screen else "☁️ نسخة احتياطية", self.header_bar)
+        self.btn_backup = QPushButton("نسخة" if self.is_small_screen else "نسخة احتياطية", self.header_bar)
         self.btn_backup.setFixedSize(header_control_w, header_control_h)
         self.btn_backup.setObjectName("BtnDark")
         self.btn_backup.clicked.connect(self.trigger_manual_backup)
         header_layout.addWidget(self.btn_backup)
+        if self.is_small_screen:
+            self.btn_backup.hide()
 
         btn_close_shift = QPushButton("إغلاق" if self.is_small_screen else "🚪 إغلاق الوردية", self.header_bar)
         btn_close_shift.setFixedSize(header_control_w, header_control_h)
         btn_close_shift.setObjectName("BtnPink")
         btn_close_shift.clicked.connect(self.close_shift_and_drawer)
         header_layout.addWidget(btn_close_shift)
+        if self.is_small_screen:
+            btn_close_shift.hide()
         
         # Customer search and controls use the former unused profile slot.
         self.btn_customers = QPushButton("عملاء", self.header_bar)
@@ -789,12 +749,22 @@ class MainPOSDashboard(QMainWindow):
         self.btn_customers.setStyleSheet(f"QPushButton {{ background-color: #ffffff; color: #27272a; border: 1px solid #dedbd7; border-radius: 10px; padding: {btn_padding}; font-size: {btn_font_size}; font-weight: bold; }} QPushButton:hover {{ background-color: #fff1f2; border-color: #e7a4b5; }}")
         self.btn_customers.clicked.connect(self.open_customers_management)
         header_layout.addWidget(self.btn_customers)
+        if self.is_small_screen:
+            self.btn_customers.hide()
         
         btn_settings = QPushButton("⚙️", self.header_bar)
         btn_settings.setFixedSize(header_control_h, header_control_h)
         btn_settings.setStyleSheet("QPushButton { background-color: #ffffff; color: #27272a; border: 1px solid #dedbd7; border-radius: 10px; font-size: 16px; padding: 0px; } QPushButton:hover { background-color: #fff1f2; border-color: #e7a4b5; }")
         btn_settings.clicked.connect(self.open_settings_menu)
         header_layout.addWidget(btn_settings)
+
+        # Keep primary cashier controls in the header as the window narrows.
+        # The other actions remain available from the settings menu.
+        self._header_admin_buttons = (
+            btn_drivers_mgr, btn_menu_mgr, btn_reports,
+            self.btn_backup, btn_close_shift, self.btn_customers,
+        )
+        self._update_header_buttons()
         
         self.pos_layout.addWidget(self.header_bar)
         
@@ -897,14 +867,14 @@ class MainPOSDashboard(QMainWindow):
         self.menu_container.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.menu_grid = QGridLayout(self.menu_container)
         self.menu_grid.setContentsMargins(10, 10, 10, 10)
-        self.menu_grid.setSpacing(10)
+        self.menu_grid.setSpacing(7 if self.is_small_screen else 10)
         self.scroll_menu.setWidget(self.menu_container)
         menu_page_layout.addWidget(self.scroll_menu)
         
         # Column D: Categories Vertical Sidebar (Left side, LTR flow) - 200px width
         self.categories_sidebar = QFrame(pos_body)
         self.categories_sidebar.setObjectName("PosPanel")
-        self.categories_sidebar.setMinimumWidth(110 if self.is_small_screen else 150)
+        self.categories_sidebar.setMinimumWidth(132 if self.is_small_screen else 150)
         self.categories_sidebar.setMaximumWidth(160 if self.is_small_screen else 220)
         self.categories_sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         sidebar_main_layout = QVBoxLayout(self.categories_sidebar)
@@ -959,7 +929,7 @@ class MainPOSDashboard(QMainWindow):
         self.categories_container.setStyleSheet("border: none; background: transparent;")
         self.cat_sidebar_layout = QVBoxLayout(self.categories_container)
         self.cat_sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        self.cat_sidebar_layout.setSpacing(8)
+        self.cat_sidebar_layout.setSpacing(4 if self.is_small_screen else 8)
         sidebar_main_layout.addWidget(self.categories_container)
         
         sidebar_main_layout.addStretch()
@@ -978,7 +948,7 @@ class MainPOSDashboard(QMainWindow):
         sidebar_main_layout.addWidget(btn_open_shift_manual)
         
         footer_layout = QHBoxLayout()
-        lbl_version = QLabel("V1.0.0 STABLE", self.categories_sidebar)
+        lbl_version = QLabel("BROOST OFFLINE", self.categories_sidebar)
         lbl_version.setStyleSheet("color: #a0a0a0; font-size: 10px; font-weight: bold; border: none; background: transparent;")
         self.lbl_sidebar_time = QLabel("", self.categories_sidebar)
         self.lbl_sidebar_time.setStyleSheet("color: #616161; font-size: 10px; font-weight: bold; border: none; background: transparent;")
@@ -1250,7 +1220,7 @@ class MainPOSDashboard(QMainWindow):
         
         # Set initial proportional sizes (pixels hint)
         if self.is_small_screen:
-            self.pos_splitter.setSizes([125, 470, 300, 185])
+            self.pos_splitter.setSizes([140, 455, 300, 185])
         else:
             self.pos_splitter.setSizes([170, 620, 360, 240])
         
@@ -1289,7 +1259,8 @@ class MainPOSDashboard(QMainWindow):
 
         center_container = QFrame(wrapper)
         center_container.setObjectName("LoginCard")
-        center_container.setFixedSize(420, 620)
+        center_container.setFixedSize(390 if self.is_small_screen else 420,
+                                      520 if self.is_small_screen else 620)
         center_container.setStyleSheet("""
             QFrame#LoginCard {
                 background-color: #ffffff;
@@ -1299,8 +1270,11 @@ class MainPOSDashboard(QMainWindow):
         """)
 
         cc_layout = QVBoxLayout(center_container)
-        cc_layout.setSpacing(16)
-        cc_layout.setContentsMargins(30, 28, 30, 28)
+        cc_layout.setSpacing(9 if self.is_small_screen else 16)
+        cc_layout.setContentsMargins(22 if self.is_small_screen else 30,
+                                     14 if self.is_small_screen else 28,
+                                     22 if self.is_small_screen else 30,
+                                     14 if self.is_small_screen else 28)
 
         # Brand header
         brand_label = QLabel("نظام الكاشير", center_container)
@@ -1336,7 +1310,7 @@ class MainPOSDashboard(QMainWindow):
 
         for name, pin in self._cashiers:
             btn = QPushButton(f"👤 {name}", center_container)
-            btn.setFixedHeight(56)
+            btn.setFixedHeight(42 if self.is_small_screen else 56)
             btn.setCheckable(True)
             btn.setProperty("cashier_name", name)
             btn.setProperty("cashier_pin", pin)
@@ -1392,7 +1366,7 @@ class MainPOSDashboard(QMainWindow):
         ]
         for text, row, col in keys:
             btn = QPushButton(text, grid_widget)
-            btn.setFixedSize(92, 52)
+            btn.setFixedSize(92, 40 if self.is_small_screen else 52)
             if text == 'دخول':
                 btn.setStyleSheet("""
                     QPushButton { font-size: 15px; font-weight: bold; background-color: #be123c; color: #ffffff;
@@ -1837,7 +1811,7 @@ class MainPOSDashboard(QMainWindow):
         QMessageBox.information(self, "تم التحديث", f"تم تحديث رصيد الدرج إلى {new_val:,.2f} ج.م بنجاح.")
 
     def delete_order_action(self, order_id):
-        """Explain every financial/sync effect before cancelling an order."""
+        """Explain the local financial effect before cancelling an order."""
         conn = database.get_connection()
         row = conn.execute(
             "SELECT payment_method, COALESCE(total, 0), status, shift_id, driver_id, "
@@ -1862,12 +1836,8 @@ class MainPOSDashboard(QMainWindow):
             effects.append("• رصيد الدرج لن يتغير لأن المبلغ غير مضاف إليه.")
         if driver_id and status == "DISPATCHED":
             effects.append("• حساب الطيار سيتعدل تلقائيًا.")
-        if source == "ONLINE":
-            effects.append("• سيُلغى على الموقع أولًا وتُراجع نقاط/كود العميل تلقائيًا.")
-            effects.append("• الإلغاء الأونلاين لا يمكن التراجع عنه بعد تأكيد السيرفر.")
-        else:
-            effects.append("• سيختفي من لوحة الأونلاين عند المزامنة.")
-            effects.append("• أمامك 8 ثوانٍ للتراجع قبل تنفيذ الحذف.")
+        effects.append("• سيُحذف من بيانات هذا الجهاز فقط.")
+        effects.append("• أمامك 8 ثوانٍ للتراجع قبل تنفيذ الحذف.")
 
         confirm = QMessageBox.question(
             self,
@@ -1877,22 +1847,6 @@ class MainPOSDashboard(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        if source == "ONLINE":
-            if not remote_id or not hasattr(self, "online_sync"):
-                QMessageBox.critical(
-                    self,
-                    "تعذر الإلغاء الآمن",
-                    "الطلب مرتبط بالموقع لكن رقم المزامنة غير موجود. لم يتم حذفه حتى لا تتأثر نقاط العميل.",
-                )
-                return
-            self._start_online_order_action(
-                "delete",
-                remote_id,
-                {"status": "CANCELLED", "cashier_name": config.ACTIVE_CASHIER_NAME},
-                {"local_order_id": order_id},
-            )
             return
 
         self._schedule_local_order_deletion(order_id, display_number, drawer_amount if affects_drawer else 0)
@@ -1930,8 +1884,6 @@ class MainPOSDashboard(QMainWindow):
             if self._delete_order_locally(order_id):
                 self.ensure_active_shift()
                 self._schedule_pending_orders_refresh(0)
-                if hasattr(self, "online_sync"):
-                    self.online_sync.poll()
                 self._record_notification(
                     "تم إلغاء الطلب",
                     f"تم حذف الطلب {display_number} وتعديل الحسابات المرتبطة.",
@@ -1978,8 +1930,8 @@ class MainPOSDashboard(QMainWindow):
             if widget:
                 widget.setParent(None)
                 
-        cat_font_size = "11px" if self.is_small_screen else "13px"
-        cat_height = 36 if self.is_small_screen else 48
+        cat_font_size = "10px" if self.is_small_screen else "13px"
+        cat_height = 32 if self.is_small_screen else 48
 
         def make_category_button(title, number=""):
             btn = QPushButton(self.categories_container)
@@ -2014,18 +1966,19 @@ class MainPOSDashboard(QMainWindow):
             """)
             row = QHBoxLayout(btn)
             row.setDirection(QBoxLayout.Direction.LeftToRight)
-            row.setContentsMargins(9, 5, 12, 5)
-            row.setSpacing(10)
+            row.setContentsMargins(3 if self.is_small_screen else 9, 3 if self.is_small_screen else 5,
+                                   3 if self.is_small_screen else 12, 3 if self.is_small_screen else 5)
+            row.setSpacing(3 if self.is_small_screen else 10)
 
             if number:
                 number_label = QLabel(str(number), btn)
                 number_label.setObjectName("CategoryNumber")
-                number_label.setFixedWidth(25 if self.is_small_screen else 29)
+                number_label.setFixedWidth(19 if self.is_small_screen else 29)
                 number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 number_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 row.addWidget(number_label)
             else:
-                row.addSpacing(25 if self.is_small_screen else 29)
+                row.addSpacing(19 if self.is_small_screen else 29)
 
             title_label = QLabel(title, btn)
             title_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2056,14 +2009,24 @@ class MainPOSDashboard(QMainWindow):
     def resizeEvent(self, event):
         """Re-render the menu grid on resize so column count updates dynamically."""
         super().resizeEvent(event)
+        if hasattr(self, "_header_admin_buttons"):
+            self._update_header_buttons()
         if hasattr(self, '_current_cat_id') and hasattr(self, 'menu_grid'):
             # Only re-render if available width changed enough (avoid loop)
             new_w = self.center_col.width() if hasattr(self, 'center_col') else 0
             if new_w > 0:
                 new_cols = max(2, min(4, new_w // 175))
-                if not hasattr(self, '_last_cols') or self._last_cols != new_cols:
+                compact = self.height() <= 700
+                if (getattr(self, '_last_cols', None) != new_cols or
+                        getattr(self, '_last_compact_cards', None) != compact):
                     self._last_cols = new_cols
+                    self._last_compact_cards = compact
                     self.load_menu_items(self._current_cat_id)
+
+    def _update_header_buttons(self):
+        compact = self.width() <= 1500 or self.height() <= 800
+        for button in self._header_admin_buttons:
+            button.setVisible(not compact)
 
     def eventFilter(self, watched, event):
         return super().eventFilter(watched, event)
@@ -2137,19 +2100,28 @@ class MainPOSDashboard(QMainWindow):
             self.menu_grid.addWidget(empty, 0, 0, 1, cols_count)
             return
         
+        compact_cards = self.height() <= 700
+        self.menu_grid.setSpacing(7 if compact_cards else 10)
         for item_id, name, price, available in items:
             name = pos_text(name) or "صنف"
             card = QFrame(self.menu_container)
             card.setObjectName("MenuItemCard")
             # Compact and uniform size
-            card.setMinimumHeight(100)
-            card.setMaximumHeight(130 if item_id in item_sizes else 115)
+            has_sizes = item_id in item_sizes
+            card.setMinimumHeight(96 if has_sizes and compact_cards else
+                                  78 if compact_cards else 100)
+            card.setMaximumHeight(106 if has_sizes and compact_cards else
+                                  84 if compact_cards else
+                                  130 if has_sizes else 115)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             
             # Card interior layout
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 8, 10, 8)
-            card_layout.setSpacing(4)
+            card_layout.setContentsMargins(8 if compact_cards else 10,
+                                          5 if compact_cards else 8,
+                                          8 if compact_cards else 10,
+                                          5 if compact_cards else 8)
+            card_layout.setSpacing(2 if compact_cards else 4)
             
             # Food category emojis
             emoji = "🍗"
@@ -2175,8 +2147,8 @@ class MainPOSDashboard(QMainWindow):
             lbl_name.setWordWrap(True)
             lbl_name.setStyleSheet("font-weight: 800; font-size: 12px; color: #27272a; background: transparent; border: none;")
             lbl_name.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-            lbl_name.setMinimumHeight(35)
-            lbl_name.setMaximumHeight(52)
+            lbl_name.setMinimumHeight(27 if compact_cards else 35)
+            lbl_name.setMaximumHeight(42 if compact_cards else 52)
             lbl_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             
             lbl_price = QLabel(f"{price:.0f} ج.م", card)
@@ -2993,8 +2965,6 @@ class MainPOSDashboard(QMainWindow):
             
         conn.commit()
         conn.close()
-        if hasattr(self, "online_sync"):
-            self.online_sync.push_pos_orders_now()
         
         # 5. Generate Receipt contents
         cashier_receipt = self.generate_receipt_text(order_id, "نسخة الكاشير")
@@ -3016,30 +2986,119 @@ class MainPOSDashboard(QMainWindow):
             self.discount_input.clear()
         if hasattr(self, 'notes_input'):
             self.notes_input.clear()
-              html.append("<style>")
-        html.append(f"  body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; text-align: right; margin: 0; padding: {body_padding}; color: #000000; background-color: #ffffff; font-weight: bold; line-height: 1.5; }}")
+        # ── تصفير حقل المبلغ المدفوع بعد كل أوردر ──
+        self.paid_input.setText("0")
+        self.calculate_change_due()
+        self.btn_repeat_order.setVisible(False)
+        self.refresh_cart_display()
+        self.ensure_active_shift()
+        self.load_pending_delivery_orders()
+        self.update_phone_completer()
+
+    def generate_receipt_text(self, order_id, copy_title):
+        from datetime import datetime
+        conn = database.get_connection()
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT o.id, o.channel, o.payment_method, o.subtotal, o.delivery_fee, COALESCE(o.discount, 0.0), o.total, o.created_at,
+                   cust.name, cust.phone, cust.address, o.cash_paid, o.change_due, o.notes,
+                   COALESCE(o.public_number, '')
+            FROM orders o
+            LEFT JOIN customers cust ON o.customer_id = cust.id
+            WHERE o.id=?
+        """, (order_id,))
+        o_data = c.fetchone()
+
+        c.execute("""
+            SELECT COALESCE(oi.item_name, m.name), oi.size_name, oi.quantity, oi.price, oi.extras_json
+            FROM order_items oi
+            LEFT JOIN menu_items m ON oi.menu_item_id = m.id
+            WHERE oi.order_id=?
+        """, (order_id,))
+        o_items = c.fetchall()
+
+        if not o_data:
+            conn.close()
+            return ""
+
+        # Calculate daily order serial number
+        order_date_str = o_data[7][:10]  # 'YYYY-MM-DD'
+        c.execute("""
+            SELECT COUNT(*) FROM orders
+            WHERE substr(created_at, 1, 10) = ? AND id <= ?
+        """, (order_date_str, order_id))
+        daily_serial = c.fetchone()[0]
+
+        conn.close()
+
+        invoice_number = o_data[14] or str(daily_serial)
+        is_kitchen = "مطبخ" in copy_title
+
+        paper_width = getattr(config, "PAPER_WIDTH", 80)
+
+        # Styles optimized depending on paper size (80mm vs 58mm)
+        if paper_width == 58:
+            body_padding = "2px"
+            container_max_width = "100%"
+            font_title = "11.5px"
+            font_subtitle = "8px"
+            font_info = "7.5px"
+            font_items = "7.5px"
+            font_items_header = "7.5px"
+            font_qty = "8.5px"
+            font_grand_total = "9.5px"
+            font_kitchen_id = "15px"
+            font_kitchen_channel = "9px"
+            font_notes = "7.5px"
+            notes_padding = "4px"
+            total_padding = "4px"
+            qr_size = "50"
+        else:
+            body_padding = "3px"
+            container_max_width = "380px"
+            font_title = "15px"
+            font_subtitle = "9.5px"
+            font_info = "8.5px"
+            font_items = "9px"
+            font_items_header = "9px"
+            font_qty = "10px"
+            font_grand_total = "13px"
+            font_kitchen_id = "18px"
+            font_kitchen_channel = "11px"
+            font_notes = "8.5px"
+            notes_padding = "4px"
+            total_padding = "4px"
+            qr_size = "45"
+
+        # Build layout receipt HTML string
+        html = []
+        html.append("<html dir='rtl'>")
+        html.append("<head>")
+        html.append("<style>")
+        html.append(f"  body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; direction: rtl; text-align: right; margin: 0; padding: {body_padding}; color: #000000; background-color: #ffffff; font-weight: bold; }}")
         html.append(f"  .receipt-container {{ width: 100%; max-width: {container_max_width}; margin: 0 auto; padding: 0; }}")
         html.append("  .center { text-align: center; }")
         html.append("  .bold { font-weight: bold; }")
-        html.append("  .divider { height: 6px; }")
-        html.append("  .solid-divider { height: 6px; }")
-        html.append("  .double-divider { height: 6px; }")
-        html.append(f"  .title {{ font-size: {font_title}; font-weight: 900; color: #000000; margin: 2px 0; }}")
+        html.append("  .divider { border-top: 1px dashed #000000; margin: 3px 0; }")
+        html.append("  .solid-divider { border-top: 1px solid #000000; margin: 3px 0; }")
+        html.append("  .double-divider { border-top: 2px solid #000000; margin: 3px 0; }")
+        html.append(f"  .title {{ font-size: {font_title}; font-weight: bold; color: #000000; margin: 2px 0; }}")
         html.append(f"  .subtitle {{ font-size: {font_subtitle}; font-weight: bold; color: #000000; margin-bottom: 2px; }}")
-        html.append(f"  .info-table {{ margin: 3px 0; font-size: {font_info}; line-height: 1.55; }}")
-        html.append("  .info-table td { padding: 3px 0; color: #000000; }")
-        html.append(f"  .items-table {{ border-collapse: collapse; margin: 6px 0; font-size: {font_items}; line-height: 1.5; }}")
-        html.append(f"  .items-table th {{ border-bottom: 1.5px solid #000000; padding: 3.5px 0; font-weight: bold; color: #000000; font-size: {font_items_header}; }}")
-        html.append("  .items-table td { padding: 4.5px 0; vertical-align: top; color: #000000; }")
-        html.append("  .item-row { }")
-        html.append(f"  .item-qty {{ font-size: {font_qty}; font-weight: 900; color: #000000; text-align: center; }}")
+        html.append(f"  .info-table {{ margin: 3px 0; font-size: {font_info}; }}")
+        html.append("  .info-table td { padding: 1.5px 0; color: #000000; }")
+        html.append(f"  .items-table {{ border-collapse: collapse; margin: 4px 0; font-size: {font_items}; }}")
+        html.append(f"  .items-table th {{ border-bottom: 1.5px solid #000000; padding: 2.5px 0; font-weight: bold; color: #000000; font-size: {font_items_header}; }}")
+        html.append("  .items-table td { padding: 2.5px 0; vertical-align: top; color: #000000; }")
+        html.append("  .item-row { border-bottom: 1px dashed #000000; }")
+        html.append(f"  .item-qty {{ font-size: {font_qty}; font-weight: bold; color: #000000; }}")
         html.append("  .item-name { font-weight: bold; }")
-        html.append("  .item-price { font-weight: 900; }")
-        html.append("  .extras { font-size: 8.5px; color: #333333; padding-right: 6px; margin-top: 1px; }")
+        html.append("  .item-price { font-weight: bold; }")
+        html.append("  .extras { font-size: 8.5px; color: #000000; padding-right: 6px; margin-top: 1px; }")
         html.append("  .spicy { font-weight: bold; }")
-        html.append(f"  .notes-box {{ border: 1px solid #000000; padding: {notes_padding}; margin: 5px 0; font-size: {font_notes}; font-weight: bold; color: #000000; background-color: #ffffff; line-height: 1.4; }}")
-        html.append(f"  .grand-total {{ font-size: {font_grand_total}; font-weight: 900; color: #000000; border: 2px solid #000000; padding: {total_padding}; margin: 6px 0; background-color: #ffffff; text-align: center; }}")
-        html.append(f"  .kitchen-id {{ font-size: {font_kitchen_id}; font-weight: 900; background-color: #ffffff; border: 2px solid #000000; padding: {total_padding}; margin: 6px 0; text-align: center; }}")
+        html.append(f"  .notes-box {{ border: 1.5px solid #000000; padding: {notes_padding}; margin: 4px 0; font-size: {font_notes}; font-weight: bold; color: #000000; background-color: #ffffff; }}")
+        html.append(f"  .grand-total {{ font-size: {font_grand_total}; font-weight: bold; color: #000000; border: 2px solid #000000; padding: {total_padding}; margin: 4px 0; background-color: #ffffff; text-align: center; }}")
+        html.append(f"  .kitchen-id {{ font-size: {font_kitchen_id}; font-weight: bold; background-color: #ffffff; border: 2px solid #000000; padding: {total_padding}; margin: 4px 0; text-align: center; }}")
         html.append(f"  .kitchen-channel {{ font-size: {font_kitchen_channel}; font-weight: bold; color: #000000; }}")
         html.append("</style>")
         html.append("</head>")
@@ -3052,15 +3111,16 @@ class MainPOSDashboard(QMainWindow):
             # ─────────────────────────────────────────────
             html.append("<div class='center'>")
             html.append(f"<div class='subtitle bold'>{copy_title}</div>")
-            html.append(f"<div class='kitchen-id'>طلب رقم #{daily_serial}</div>")
-            
+            html.append(f"<div class='kitchen-id'>طلب رقم {invoice_number}</div>")
+
             channel_text = "دليفري توصيل" if o_data[1] == 'DELIVERY' else "صالة تيك أواي"
             html.append(f"<div class='kitchen-channel'>{channel_text}</div>")
             html.append("</div>")
-            
+
+            html.append("<div class='double-divider'></div>")
             html.append("<table class='info-table' width='100%'>")
             html.append(f"<tr><td align='left' width='55%'>{o_data[7]}</td><td class='bold' align='right' width='45%'>تاريخ الطلب:</td></tr>")
-            
+
             if o_data[1] == 'DELIVERY':
                 html.append(f"<tr><td align='left' width='55%'>{o_data[8]}</td><td class='bold' align='right' width='45%'>العميل:</td></tr>")
                 if o_data[9]:
@@ -3072,16 +3132,18 @@ class MainPOSDashboard(QMainWindow):
                 if o_data[9]:
                     html.append(f"<tr><td align='left' width='55%'>{o_data[9]}</td><td class='bold' align='right' width='45%'>التليفون:</td></tr>")
             html.append("</table>")
-            
+
+            html.append("<div class='double-divider'></div>")
+
             # Notes / Special instructions - extremely prominent for kitchen copy
             order_notes = o_data[13] if len(o_data) > 13 and o_data[13] else None
             if order_notes:
                 html.append(f"<div class='notes-box'>* تنبيه للمطبخ:<br/>{order_notes}</div>")
-            
+
             # Kitchen items list (larger fonts, no pricing)
             html.append(f"<table class='items-table' width='100%' style='font-size: {'12px' if paper_width == 58 else '15px'};'>")
             html.append("<tr><th align='left' width='25%'>الكمية</th><th align='right' width='75%'>الصنف</th></tr>")
-            
+
             for name, size, qty, price, ext_json in o_items:
                 name = pos_text(name) or "صنف"
                 size = pos_text(size) or "عادي"
@@ -3095,13 +3157,13 @@ class MainPOSDashboard(QMainWindow):
                             ext_dict = parsed
                     except Exception:
                         pass
-                
+
                 spicy_label = " <span class='spicy'>[حار]</span>" if spicy_flag else ""
-                
+
                 html.append("<tr class='item-row'>")
                 html.append(f"<td align='left' width='25%' class='item-qty'>x{qty}</td>")
                 html.append(f"<td align='right' width='75%'><span class='item-name'>{name} ({size})</span>{spicy_label}")
-                
+
                 # Extras list under the item
                 ext_names = ", ".join(filter(None, (pos_text(key) for key in ext_dict.keys())))
                 if ext_names:
@@ -3109,36 +3171,45 @@ class MainPOSDashboard(QMainWindow):
                     html.append(f"<div class='extras'>{ext_title}: {ext_names}</div>")
                 html.append("</td>")
                 html.append("</tr>")
-                
+
             html.append("</table>")
-            html.append("<div class='center subtitle bold' style='margin-top: 8px;'>يرجى تحضير الطعام بأسرع وقت!</div>")
-            
+            html.append("<div class='double-divider'></div>")
+            html.append("<div class='center subtitle bold'>يرجى تحضير الطعام بأسرع وقت!</div>")
+
         else:
             # ─────────────────────────────────────────────
             # CASHIER/CUSTOMER RECEIPT LAYOUT
             # ─────────────────────────────────────────────
             html.append("<div class='center'>")
             html.append("<div class='title'>بروست — BROOST</div>")
-            html.append(f"<div style='font-size: 10px; margin-bottom: 4px;'>هاتف: {config.RESTAURANT_LANDLINE} · {config.RESTAURANT_MOBILE}</div>")
-            html.append(f"<div style='font-size: 14px; font-weight: 900; margin: 4px 0 1px 0;'>فاتورة رقم #{daily_serial}</div>")
-            html.append(f"<div style='font-size: 11px; color: #222; margin-bottom: 8px; font-weight: bold;'>{o_data[7]}</div>")
+            html.append(f"<div class='subtitle'>{copy_title}</div>")
+            html.append(f"<div style='font-size: 9.5px; margin: 1px 0;'>هاتف: {config.RESTAURANT_LANDLINE} · {config.RESTAURANT_MOBILE}</div>")
             html.append("</div>")
-            
+
+            html.append("<div class='divider'></div>")
+            html.append("<table class='info-table' width='100%'>")
+            html.append(f"<tr><td align='left' width='55%'>{invoice_number}</td><td class='bold' align='right' width='45%'>رقم الفاتورة:</td></tr>")
+            html.append(f"<tr><td align='left' width='55%'>{o_data[7]}</td><td class='bold' align='right' width='45%'>التاريخ والوقت:</td></tr>")
+
             if o_data[1] == 'DELIVERY':
-                html.append("<div style='margin: 6px 0; font-size: 11px; line-height: 1.5;'>")
-                if o_data[8] and o_data[8] != 'عميل المطعم':
-                    html.append(f"<div>العميل: {o_data[8]}</div>")
+                html.append(f"<tr><td align='left' width='55%'>{o_data[8]}</td><td class='bold' align='right' width='45%'>العميل:</td></tr>")
                 if o_data[9]:
-                    html.append(f"<div dir='ltr' style='text-align:right'>التليفون: {o_data[9]}</div>")
+                    html.append(f"<tr><td align='left' width='55%'>{o_data[9]}</td><td class='bold' align='right' width='45%'>التليفون:</td></tr>")
                 if o_data[10]:
-                    html.append(f"<div>العنوان: {o_data[10]}</div>")
-                html.append("</div>")
+                    html.append(f"<tr><td align='left' width='55%'>{o_data[10]}</td><td class='bold' align='right' width='45%'>العنوان:</td></tr>")
+            else:
+                html.append(f"<tr><td align='left' width='55%'>{o_data[8] or 'صالة / تيك أواي'}</td><td class='bold' align='right' width='45%'>العميل:</td></tr>")
+            html.append("</table>")
+
+            html.append("<div class='double-divider'></div>")
+
+            # Notes for cashier copy - removed as requested
+            pass
 
             # Cashier items list
             html.append("<table class='items-table' width='100%'>")
-            html.append("<thead><tr><th align='left' width='30%'>الإجمالي</th><th align='center' width='15%'>العدد</th><th align='right' width='55%'>الوجبة</th></tr></thead>")
-            html.append("<tbody>")
-            
+            html.append("<tr><th align='left' width='25%'>الإجمالي</th><th align='center' width='15%'>العدد</th><th align='right' width='60%'>الوجبة</th></tr>")
+
             for name, size, qty, price, ext_json in o_items:
                 name = pos_text(name) or "صنف"
                 size = pos_text(size) or "عادي"
@@ -3152,59 +3223,33 @@ class MainPOSDashboard(QMainWindow):
                             ext_dict = parsed
                     except Exception:
                         pass
-                
+
                 spicy_label = " <span class='spicy'>[حار]</span>" if spicy_flag else ""
-                
+
                 html.append("<tr class='item-row'>")
-                html.append(f"<td align='left' width='30%' class='item-price'>{price*qty:.2f} ج.م</td>")
-                html.append(f"<td align='center' width='15%' class='item-qty'>{qty}</td>")
-                html.append(f"<td align='right' width='55%'><span class='item-name'>{name} ({size})</span>{spicy_label}")
-                
+                html.append(f"<td align='left' width='25%' class='item-price'>{price*qty:.2f} ج.م</td>")
+                html.append(f"<td align='center' width='15%'>{qty}</td>")
+                html.append(f"<td align='right' width='60%'><span class='item-name'>{name} ({size})</span>{spicy_label}")
+
                 ext_names = ", ".join(filter(None, (pos_text(key) for key in ext_dict.keys())))
                 if ext_names:
                     ext_title = "مكونات العرض" if str(name).startswith("عرض:") else "+ إضافات"
                     html.append(f"<div class='extras'>{ext_title}: {ext_names}</div>")
                 html.append("</td>")
                 html.append("</tr>")
-                
-            html.append("</tbody>")
+
             html.append("</table>")
-            
+
+            html.append("<div class='solid-divider'></div>")
+
             # Grand Total Box ONLY (all other fields removed as requested)
             total = o_data[6]
             html.append("<div class='grand-total'>")
             html.append(f"الإجمالي الكلي: {total:.2f} ج.م")
             html.append("</div>")
-            
-            import base64
-            qr_file_path = None
-            for path in [
-                os.path.join(os.path.dirname(sys.executable), "facebook-qr.jpeg") if getattr(sys, 'frozen', False) else None,
-                os.path.join(getattr(sys, '_MEIPASS', ''), "facebook-qr.jpeg") if hasattr(sys, '_MEIPASS') else None,
-                os.path.join(database.BASE_DIR, "facebook-qr.jpeg"),
-                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "facebook-qr.jpeg")
-            ]:
-                if path and os.path.exists(path):
-                    qr_file_path = path
-                    break
-            
-            qr_img_src = ""
-            if qr_file_path:
-                try:
-                    with open(qr_file_path, "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                        qr_img_src = f"data:image/jpeg;base64,{encoded_string}"
-                except Exception:
-                    pass
-            
-            if not qr_img_src:
-                qr_img_src = f"file:///{os.path.join(database.BASE_DIR, 'facebook-qr.jpeg').replace('\\', '/')}"
 
-            html.append("<div class='center' style='margin: 8px 0 4px 0;'>")
-            html.append(f"  <img src='{qr_img_src}' width='65' height='65'/>")
-            html.append("</div>")
-            html.append("<div class='center' style='font-size: 12px; font-weight: bold; margin-top: 6px;'>شكراً لزيارتكم — مطعم بروست</div>")
-            html.append("<div class='center' style='font-size: 9px; font-weight: normal; color: #555; margin-top: 2px; direction: ltr;'>system by men3em khaled</div>")
+            html.append("<div class='divider'></div>")
+            html.append("<div class='center' style='font-size: 10px; margin-top: 4px;'>شكراً لزيارتكم — مطعم بروست</div>")
 
         html.append("</div>")
         html.append("</body>")
@@ -3233,16 +3278,6 @@ class MainPOSDashboard(QMainWindow):
             ORDER BY o.created_at ASC
         """)
         pending = c.fetchall()
-        queued_local_ids = set()
-        try:
-            for (context_json,) in c.execute(
-                "SELECT context_json FROM pending_remote_actions"
-            ).fetchall():
-                context = json.loads(context_json or "{}")
-                if context.get("local_order_id") is not None:
-                    queued_local_ids.add(int(context["local_order_id"]))
-        except (sqlite3.Error, json.JSONDecodeError, TypeError, ValueError):
-            pass
         conn.close()
         if self._pending_local_deletions:
             pending = [row for row in pending if int(row[0]) not in self._pending_local_deletions]
@@ -3603,11 +3638,6 @@ class MainPOSDashboard(QMainWindow):
 
             c_lyt.addLayout(actions_lyt)
             self.orders_layout.addWidget(card)
-            if int(o_id) in queued_local_ids:
-                self._set_order_card_busy(
-                    o_id,
-                    "محفوظ محليًا — سيتم التنفيذ تلقائيًا عند رجوع الإنترنت",
-                )
         
         # ── Section 1: Cashier / Takeaway ──
         if cashier_orders:
@@ -3732,40 +3762,6 @@ class MainPOSDashboard(QMainWindow):
         if d_picker.exec() == QDialog.DialogCode.Accepted:
             selected_txt = cb.currentText()
             driver_id = int(selected_txt.split("id: ")[1].replace(")", ""))
-            driver_name = selected_txt.split(" (id:")[0]
-
-            conn = database.get_connection()
-            order_row = conn.execute(
-                "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
-                (order_id,),
-            ).fetchone()
-            conn.close()
-            if not order_row:
-                return
-            source, remote_id = order_row
-            if source == "ONLINE":
-                if not remote_id or not hasattr(self, "online_sync"):
-                    QMessageBox.critical(
-                        self,
-                        "تعذر تحديث حالة الطلب",
-                        "الطلب مرتبط بالموقع لكن رقم المزامنة غير موجود. لم يتم تكليف الطيار.",
-                    )
-                    return
-                self._start_online_order_action(
-                    "dispatch",
-                    remote_id,
-                    {
-                        "status": "DISPATCHED",
-                        "driver_name": driver_name,
-                        "cashier_name": config.ACTIVE_CASHIER_NAME,
-                    },
-                    {
-                        "local_order_id": order_id,
-                        "driver_id": driver_id,
-                        "driver_name": driver_name,
-                    },
-                )
-                return
             self._dispatch_order_locally(order_id, driver_id)
             self.load_pending_delivery_orders()
 
@@ -3785,8 +3781,6 @@ class MainPOSDashboard(QMainWindow):
                 conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
             )
             conn.commit()
-            if hasattr(self, "online_sync"):
-                self.online_sync.push_pos_orders_now()
             return True
         finally:
             conn.close()
@@ -3802,30 +3796,6 @@ class MainPOSDashboard(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
             
-        conn = database.get_connection()
-        row = conn.execute(
-            "SELECT COALESCE(source, 'POS'), remote_id FROM orders WHERE id=?",
-            (order_id,),
-        ).fetchone()
-        conn.close()
-        if not row:
-            return
-        source, remote_id = row
-        if source == "ONLINE":
-            if not remote_id or not hasattr(self, "online_sync"):
-                QMessageBox.critical(
-                    self,
-                    "تعذر إنهاء الطلب",
-                    "رقم مزامنة الطلب غير موجود. لم يتم إنهاؤه حتى لا تتأثر حسابات العميل.",
-                )
-                return
-            self._start_online_order_action(
-                "complete",
-                remote_id,
-                {"status": "COMPLETED", "cashier_name": config.ACTIVE_CASHIER_NAME},
-                {"local_order_id": order_id, "channel": channel},
-            )
-            return
         self._complete_order_locally(order_id, channel)
         self.load_pending_delivery_orders()
         self.ensure_active_shift()
@@ -3855,8 +3825,6 @@ class MainPOSDashboard(QMainWindow):
                 conn, order_id, fallback_shift_id=config.ACTIVE_SHIFT_ID
             )
             conn.commit()
-            if hasattr(self, "online_sync"):
-                self.online_sync.push_pos_orders_now()
             return True
         finally:
             conn.close()
@@ -3918,16 +3886,28 @@ class MainPOSDashboard(QMainWindow):
         action_change_pwd = QAction("🔑 إدارة كلمات المرور (الورديات والنظام)", self)
         action_change_pwd.triggered.connect(self.open_manage_passwords_dialog)
 
-        action_web_sync = QAction("🌐 ربط الموقع والمزامنة", self)
-        action_web_sync.triggered.connect(self.open_web_sync_settings)
-
         action_restore = QAction("📥 استيراد وتحويل Backup قديم", self)
         action_restore.triggered.connect(self.import_backup_from_file)
+
+        action_drivers = QAction("الطيارين", self)
+        action_drivers.triggered.connect(self.open_drivers_management)
+        action_customers = QAction("العملاء", self)
+        action_customers.triggered.connect(self.open_customers_management)
+        action_reports = QAction("التقارير", self)
+        action_reports.triggered.connect(self.open_reports_dialog)
+        action_backup = QAction("حفظ نسخة احتياطية", self)
+        action_backup.triggered.connect(self.trigger_manual_backup)
+        action_close_shift = QAction("إغلاق الوردية", self)
+        action_close_shift.triggered.connect(self.close_shift_and_drawer)
         
         menu.addAction(action_menu)
+        menu.addAction(action_drivers)
+        menu.addAction(action_customers)
+        menu.addAction(action_reports)
+        menu.addAction(action_backup)
+        menu.addAction(action_close_shift)
         menu.addAction(action_printer)
         menu.addSeparator()
-        menu.addAction(action_web_sync)
         menu.addAction(action_change_pwd)
         menu.addSeparator()
         menu.addAction(action_restore)
@@ -3935,215 +3915,6 @@ class MainPOSDashboard(QMainWindow):
         btn = self.sender()
         if btn:
             menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-
-    def open_web_sync_settings(self):
-        from PyQt6.QtWidgets import QCheckBox, QFormLayout
-
-        conn = database.get_connection()
-        values = dict(conn.execute(
-            "SELECT key, value FROM settings WHERE key IN ('web_sync_enabled', 'web_server_url', 'web_sync_key')"
-        ).fetchall())
-        conn.close()
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("ربط الموقع والمزامنة")
-        dialog.setMinimumWidth(560)
-        dialog.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(22, 22, 22, 22)
-        layout.setSpacing(14)
-
-        title = QLabel("🌐 ربط برنامج الكاشير بالموقع", dialog)
-        title.setObjectName("DialogTitle")
-        layout.addWidget(title)
-
-        info = QLabel(
-            "ضع رابط السيرفر ومفتاح المزامنة. البرنامج يظل يعمل محليًا إذا انقطع الاتصال.",
-            dialog,
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        form = QFormLayout()
-        server_input = QLineEdit(dialog)
-        server_input.setText(values.get("web_server_url", "http://127.0.0.1:8765"))
-        server_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        form.addRow("رابط السيرفر:", server_input)
-
-        key_input = QLineEdit(dialog)
-        key_input.setText(values.get("web_sync_key", "broost-local-sync"))
-        key_input.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("مفتاح المزامنة:", key_input)
-
-        enabled_input = QCheckBox("تشغيل مزامنة الموقع", dialog)
-        enabled_input.setChecked(values.get("web_sync_enabled", "0") == "1")
-        form.addRow("", enabled_input)
-        layout.addLayout(form)
-
-        status_card = QFrame(dialog)
-        status_card.setObjectName("SyncCheckCard")
-        status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(14, 12, 14, 12)
-        status_layout.setSpacing(5)
-        status_title = QLabel("حالة الاتصال", status_card)
-        status_title.setStyleSheet("font-size: 13px; font-weight: 900; color: #2f2525;")
-        status_label = QLabel("اضغط «فحص الاتصال» للتأكد من السيرفر والمفتاح والمزامنة.", status_card)
-        status_label.setWordWrap(True)
-        status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        status_layout.addWidget(status_title)
-        status_layout.addWidget(status_label)
-        layout.addWidget(status_card)
-
-        def set_check_style(kind, text):
-            colors = {
-                "idle": ("#f8fafc", "#cbd5e1", "#475569"),
-                "loading": ("#eff6ff", "#93c5fd", "#1d4ed8"),
-                "success": ("#ecfdf3", "#86efac", "#166534"),
-                "warning": ("#fff7ed", "#fdba74", "#9a3412"),
-                "error": ("#fff1f2", "#fda4af", "#9f1239"),
-            }
-            background, border, foreground = colors[kind]
-            status_card.setStyleSheet(
-                "QFrame#SyncCheckCard {"
-                f"background: {background}; border: 1px solid {border}; border-radius: 12px;"
-                "}"
-                f"QFrame#SyncCheckCard QLabel {{ color: {foreground}; border: none; background: transparent; }}"
-            )
-            status_label.setText(text)
-
-        buttons = QHBoxLayout()
-        cancel = QPushButton("تراجع", dialog)
-        cancel.setObjectName("BtnDark")
-        cancel.clicked.connect(dialog.reject)
-        check = QPushButton("فحص الاتصال", dialog)
-        check.setObjectName("BtnDark")
-        save = QPushButton("حفظ ومزامنة الآن", dialog)
-        buttons.addWidget(cancel)
-        buttons.addWidget(check)
-        buttons.addWidget(save)
-        layout.addLayout(buttons)
-
-        check_state = {"running": False, "result": None, "save_after": False}
-        check_timer = QTimer(dialog)
-        check_timer.setInterval(100)
-
-        def connection_values():
-            return server_input.text().strip().rstrip("/"), key_input.text().strip()
-
-        def save_connection_values():
-            server_url, sync_key = connection_values()
-            conn = database.get_connection()
-            try:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                    [
-                        ("web_server_url", server_url),
-                        ("web_sync_key", sync_key),
-                    ],
-                )
-                conn.commit()
-            finally:
-                conn.close()
-
-        def save_enabled(enabled):
-            conn = database.get_connection()
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                    ("web_sync_enabled", "1" if enabled else "0"),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-
-        def render_check_result(result):
-            server_line = "✅ السيرفر متصل" if result.get("server_ok") else "❌ السيرفر غير متاح"
-            if result.get("server_ok"):
-                key_line = "✅ مفتاح المزامنة صحيح" if result.get("key_ok") else "❌ مفتاح المزامنة غير صحيح"
-            else:
-                key_line = "— لم يتم فحص المفتاح"
-            sync_line = "✅ مسار المزامنة يعمل" if result.get("sync_ok") else "❌ المزامنة لم تكتمل"
-            text = "\n".join((server_line, key_line, sync_line, "", result.get("message", "")))
-            if result.get("sync_ok"):
-                kind = "success" if result.get("categories") or result.get("items") else "warning"
-            elif result.get("server_ok") and result.get("key_ok"):
-                kind = "warning"
-            else:
-                kind = "error"
-            set_check_style(kind, text)
-
-        def finish_check():
-            result = check_state.get("result")
-            if result is None:
-                return
-            check_timer.stop()
-            check_state["running"] = False
-            check_state["result"] = None
-            check.setEnabled(True)
-            save.setEnabled(True)
-            server_input.setEnabled(True)
-            key_input.setEnabled(True)
-            enabled_input.setEnabled(True)
-            render_check_result(result)
-            if check_state.get("save_after") and result.get("sync_ok"):
-                save_enabled(True)
-                dialog.accept()
-                if hasattr(self, "online_sync"):
-                    self.online_sync.poll()
-                QMessageBox.information(
-                    self,
-                    "تم الربط",
-                    "تم حفظ الإعدادات وبدأت مزامنة المنيو والطلبات في الخلفية.",
-                )
-
-        check_timer.timeout.connect(finish_check)
-
-        def begin_check(save_after=False):
-            if check_state["running"]:
-                return
-            server_url, sync_key = connection_values()
-            if not server_url or not sync_key:
-                set_check_style("error", "رابط السيرفر ومفتاح المزامنة مطلوبان.")
-                return
-            # Always remember what the cashier entered, even when the network
-            # check fails. A failed save attempt keeps background sync disabled.
-            save_connection_values()
-            if save_after and not enabled_input.isChecked():
-                save_enabled(False)
-                dialog.accept()
-                if hasattr(self, "online_sync"):
-                    self.online_sync.poll()
-                return
-            if save_after:
-                save_enabled(False)
-            check_state.update(running=True, result=None, save_after=save_after)
-            set_check_style("loading", "⏳ جاري فحص السيرفر والمفتاح ومسار المزامنة...")
-            check.setEnabled(False)
-            save.setEnabled(False)
-            server_input.setEnabled(False)
-            key_input.setEnabled(False)
-            enabled_input.setEnabled(False)
-
-            def worker():
-                try:
-                    check_state["result"] = OnlineSyncManager.check_connection(
-                        server_url, sync_key
-                    )
-                except Exception as exc:
-                    check_state["result"] = {
-                        "server_ok": False,
-                        "key_ok": False,
-                        "sync_ok": False,
-                        "message": f"تعذر إكمال الفحص: {exc}",
-                    }
-
-            threading.Thread(target=worker, daemon=True, name="web-sync-check").start()
-            check_timer.start()
-
-        check.clicked.connect(lambda: begin_check(False))
-        save.clicked.connect(lambda: begin_check(True))
-        dialog.exec()
 
     def open_manage_passwords_dialog(self):
         """Unified Dialog to manage all system and shift passwords/pins with a touch numeric keypad."""
@@ -4436,7 +4207,7 @@ class MainPOSDashboard(QMainWindow):
         self.load_pending_delivery_orders()
 
     def open_customers_management(self):
-        dlg = CustomersAdminDialog(self.online_sync, self)
+        dlg = CustomersAdminDialog(self)
         dlg.exec()
         self.load_pending_delivery_orders()
 
@@ -4488,7 +4259,7 @@ class MainPOSDashboard(QMainWindow):
     def _finish_backup_job(self, success, result, manual):
         if hasattr(self, "btn_backup"):
             self.btn_backup.setEnabled(True)
-            self.btn_backup.setText("☁️ نسخة احتياطية")
+            self.btn_backup.setText("نسخة احتياطية")
         if manual and success:
             QMessageBox.information(
                 self, "نسخة احتياطية ناجحة",
@@ -4543,32 +4314,8 @@ class MainPOSDashboard(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        timer_was_active = (
-            hasattr(self, "online_sync_timer") and self.online_sync_timer.isActive()
-        )
-        if timer_was_active:
-            self.online_sync_timer.stop()
-
-        # Do not swap the database while an online-order sync is using it.
-        sync_lock = getattr(getattr(self, "online_sync", None), "_busy_lock", None)
-        deadline = time.monotonic() + 10
-        while sync_lock is not None and sync_lock.locked() and time.monotonic() < deadline:
-            QApplication.processEvents()
-            time.sleep(0.05)
-        if sync_lock is not None and sync_lock.locked():
-            if timer_was_active:
-                self.online_sync_timer.start()
-            QMessageBox.warning(
-                self,
-                "المزامنة تعمل الآن",
-                "انتظر ثواني حتى تنتهي مزامنة الطلبات، ثم جرّب الاستيراد مرة أخرى.",
-            )
-            return
-
         success, result = database.restore_pos_backup(backup_path)
         if not success:
-            if timer_was_active:
-                self.online_sync_timer.start()
             QMessageBox.critical(self, "لم يتم الاستيراد", str(result))
             return
 
@@ -4795,76 +4542,6 @@ class MainPOSDashboard(QMainWindow):
         close_button.clicked.connect(dialog.accept)
         dialog.exec()
 
-    def retry_online_sync(self):
-        if not hasattr(self, "online_sync"):
-            return
-        self.btn_sync_retry.setEnabled(False)
-        self.lbl_online_sync.setText("● جاري إعادة المحاولة…")
-        self.lbl_online_sync.setToolTip("يتم فحص الاتصال ومزامنة العمليات المحفوظة الآن.")
-        self.online_sync.poll()
-        QTimer.singleShot(2500, lambda: self.btn_sync_retry.setEnabled(True))
-
-    def _update_sync_queue_count(self, count):
-        count = max(0, int(count or 0))
-        previous = self._last_queue_count
-        self._last_queue_count = count
-        if count > 0:
-            self.lbl_online_sync.setText(
-                f"● {count} منتظر" if self.is_small_screen else f"● {count} عملية منتظرة"
-            )
-            self.lbl_online_sync.setToolTip(
-                "العمليات محفوظة على الجهاز وستنفذ تلقائيًا عند رجوع الاتصال."
-            )
-        elif previous > 0:
-            self._record_notification(
-                "اكتملت المزامنة",
-                "تم تنفيذ كل العمليات التي كانت محفوظة أوفلاين.",
-                "success",
-            )
-
-    def update_online_sync_status(self, connected, message):
-        if not hasattr(self, "lbl_online_sync"):
-            return
-        pending_count = 0
-        if hasattr(self, "online_sync"):
-            try:
-                pending_count = self.online_sync.pending_remote_action_count()
-            except Exception:
-                pending_count = self._last_queue_count
-        if connected:
-            self.lbl_online_sync.setText(
-                (f"● {pending_count} منتظر" if self.is_small_screen else f"● متصل • {pending_count} منتظر")
-                if pending_count else
-                ("● متصل" if self.is_small_screen else "● متصل ومتزامن")
-            )
-            self.lbl_online_sync.setProperty("connected", True)
-        else:
-            normalized = str(message or "")
-            if "مزامنة الموقع متوقفة" in normalized:
-                status_text = "● متوقفة" if self.is_small_screen else "● المزامنة متوقفة"
-            elif "مفتاح المزامنة" in normalized:
-                status_text = "● خطأ مفتاح" if self.is_small_screen else "● مفتاح المزامنة خطأ"
-            elif "خطأ داخلي" in normalized:
-                status_text = "● خطأ مزامنة" if self.is_small_screen else "● السيرفر متصل - خطأ مزامنة"
-            else:
-                status_text = "● أوفلاين" if self.is_small_screen else "● أوفلاين • يعمل محليًا"
-            self.lbl_online_sync.setText(status_text)
-            self.lbl_online_sync.setProperty("connected", False)
-        self.lbl_online_sync.setToolTip(
-            f"{str(message or '')}\nاضغط زر ↻ لإعادة المحاولة الآن."
-        )
-        self.lbl_online_sync.style().unpolish(self.lbl_online_sync)
-        self.lbl_online_sync.style().polish(self.lbl_online_sync)
-        if self._last_notified_connected is not None and connected != self._last_notified_connected:
-            self._record_notification(
-                "عاد الاتصال بالموقع" if connected else "الموقع أوفلاين",
-                "تمت استعادة المزامنة تلقائيًا."
-                if connected else
-                "الكاشير يعمل محليًا والعمليات ستُحفظ حتى رجوع الاتصال.",
-                "success" if connected else "warning",
-            )
-        self._last_notified_connected = bool(connected)
-
     def open_daily_offers(self):
         dialog = DailyOffersDialog(self)
         dialog.exec()
@@ -4873,288 +4550,10 @@ class MainPOSDashboard(QMainWindow):
         self._current_cat_id = "offers"
         self.load_categories()
         self.load_menu_items("offers")
-        if hasattr(self, "online_sync"):
-            self.online_sync.poll()
         QMessageBox.information(
             self,
-            "تم نشر العروض",
-            "تم حفظ العروض، وسيتم تحديث الموقع تلقائيًا.",
-        )
-
-    def reload_menu_after_online_sync(self):
-        current_category = getattr(self, "_current_cat_id", None)
-        self.load_categories()
-        self.load_menu_items(current_category)
-
-    def handle_online_order_received(self, order):
-        # Several Railway events can arrive in one poll; rebuild the sidebar once.
-        self._schedule_pending_orders_refresh()
-        status = str(order.get("status") or "").upper()
-        if status in ("COMPLETED", "CANCELLED"):
-            return
-        self._record_notification(
-            "طلب أونلاين جديد",
-            f"وصل الطلب {order.get('public_number') or order.get('id') or ''} بقيمة "
-            f"{float(order.get('total', 0) or 0):,.2f} ج.م.",
-            "order",
-        )
-        self._queue_online_alert(order)
-
-    def handle_online_order_updated(self, order):
-        self._schedule_pending_orders_refresh()
-        if order.get("_event_type") in (
-            "PAYMENT_PROOF_UPLOADED", "ORDER_CANCELLED_BY_CUSTOMER"
-        ):
-            title = (
-                "العميل ألغى الطلب"
-                if order.get("_event_type") == "ORDER_CANCELLED_BY_CUSTOMER"
-                else "تم رفع إثبات تحويل"
-            )
-            self._record_notification(
-                title,
-                f"الطلب {order.get('public_number') or order.get('id') or ''} يحتاج مراجعتك.",
-                "warning",
-            )
-            self._queue_online_alert(order)
-
-    def _queue_online_alert(self, order):
-        alert_key = (order.get("id"), order.get("_event_type"), order.get("payment_status"))
-        queued_keys = {
-            (item.get("id"), item.get("_event_type"), item.get("payment_status"))
-            for item in self._online_alert_queue
-        }
-        if alert_key not in queued_keys:
-            self._online_alert_queue.append(order)
-        if not self._online_alert_open:
-            QTimer.singleShot(0, self._show_next_online_alert)
-
-    def _show_next_online_alert(self):
-        if self._online_alert_open or not self._online_alert_queue:
-            return
-        self._online_alert_open = True
-        order = self._online_alert_queue.pop(0)
-        try:
-            if order.get("_event_type") == "ORDER_CANCELLED_BY_CUSTOMER":
-                CustomerCancelledOrderAlertDialog(order, self).exec()
-                return
-            dialog = OnlineOrderAlertDialog(order, self)
-            dialog.exec()
-            if dialog.action == "accept":
-                self._accept_online_order(order)
-            elif dialog.action == "reject":
-                self._reject_online_order(order)
-        finally:
-            self._online_alert_open = False
-            if self._online_alert_queue:
-                QTimer.singleShot(150, self._show_next_online_alert)
-
-    def _accept_online_order(self, order):
-        local_order_id = order.get("local_order_id")
-        remote_id = order.get("id")
-        if not local_order_id:
-            conn = database.get_connection()
-            row = conn.execute("SELECT id FROM orders WHERE remote_id=?", (remote_id,)).fetchone()
-            conn.close()
-            local_order_id = row[0] if row else None
-        if not local_order_id:
-            return
-
-        payment_status = order.get("payment_status")
-        if order.get("payment_method") == "WALLET" and payment_status == "PROOF_UPLOADED":
-            payment_status = "CONFIRMED"
-
-        if not remote_id:
-            QMessageBox.critical(self, "تعذر قبول الطلب", "رقم مزامنة الطلب غير موجود.")
-            return
-        changes = {"status": "PREPARING", "cashier_name": config.ACTIVE_CASHIER_NAME}
-        if payment_status:
-            changes["payment_status"] = payment_status
-        self._start_online_order_action(
-            "accept",
-            remote_id,
-            changes,
-            {"local_order_id": local_order_id, "payment_status": payment_status},
-        )
-
-    def _reject_online_order(self, order):
-        local_order_id = order.get("local_order_id")
-        remote_id = order.get("id")
-        if not local_order_id:
-            conn = database.get_connection()
-            row = conn.execute("SELECT id FROM orders WHERE remote_id=?", (remote_id,)).fetchone()
-            conn.close()
-            local_order_id = row[0] if row else None
-        if not remote_id:
-            QMessageBox.critical(
-                self,
-                "تعذر رفض الطلب",
-                "رقم مزامنة الطلب غير موجود. لم يتم رفضه حتى لا تتأثر نقاط العميل.",
-            )
-            return
-        self._start_online_order_action(
-            "reject",
-            remote_id,
-            {"status": "CANCELLED", "cashier_name": config.ACTIVE_CASHIER_NAME},
-            {"local_order_id": local_order_id},
-        )
-
-    def _start_online_order_action(self, action, remote_id, changes, context):
-        """Run every remote-first order transition without blocking the Qt thread."""
-        action_key = int(remote_id)
-        if action_key in self._online_order_actions:
-            return
-        self._online_order_actions.add(action_key)
-        action_labels = {
-            "accept": "قبول",
-            "reject": "رفض",
-            "dispatch": "تكليف",
-            "complete": "إنهاء",
-            "delete": "إلغاء",
-        }
-        action_label = action_labels.get(action, "تحديث")
-        local_order_id = context.get("local_order_id")
-        self._set_order_card_busy(
-            local_order_id,
-            f"جاري {action_label} الطلب وتحديث الموقع…",
-        )
-        if hasattr(self, "lbl_online_sync"):
-            self.lbl_online_sync.setText(f"● جاري {action_label} الطلب...")
-            self.lbl_online_sync.setToolTip("يتم تحديث الموقع أولًا لحماية حالة الطلب والنقاط.")
-
-        action_context = dict(context)
-        action_context.update(remote_id=int(remote_id), action_key=action_key)
-
-        def worker():
-            error = None
-            try:
-                self.online_sync.update_remote_order_now(int(remote_id), **changes)
-            except Exception as exc:
-                if self.online_sync.is_queueable_error(exc):
-                    try:
-                        self.online_sync.queue_remote_action(
-                            action,
-                            int(remote_id),
-                            dict(changes),
-                            action_context,
-                        )
-                        action_context["queued_offline"] = True
-                    except Exception as queue_exc:
-                        error = queue_exc
-                else:
-                    error = exc
-            self.online_order_action_finished.emit(action, action_context, error)
-
-        threading.Thread(
-            target=worker,
-            daemon=True,
-            name=f"online-order-{action}-{remote_id}",
-        ).start()
-
-    def _finish_online_order_action(self, action, context, error):
-        """Apply the small local transaction after Railway replies."""
-        self._online_order_actions.discard(context.get("action_key"))
-        local_order_id = context.get("local_order_id")
-        if context.get("queued_offline") and not error:
-            self._set_order_card_busy(
-                local_order_id,
-                "محفوظ محليًا — سيتم التنفيذ تلقائيًا عند رجوع الإنترنت",
-            )
-            self._record_notification(
-                "العملية محفوظة أوفلاين",
-                "لن تضيع العملية؛ سيحاول النظام تنفيذها تلقائيًا عند رجوع الاتصال.",
-                "warning",
-            )
-            self.update_online_sync_status(
-                False,
-                "أوفلاين — توجد عملية محفوظة تنتظر المزامنة",
-            )
-            return
-        if error:
-            self._set_order_card_busy(local_order_id, None)
-            action_names = {
-                "accept": "قبول",
-                "reject": "رفض",
-                "dispatch": "تكليف",
-                "complete": "إنهاء",
-                "delete": "إلغاء",
-            }
-            action_name = action_names.get(action, "تحديث")
-            title = f"تعذر {action_name} الطلب على الموقع"
-            message = (
-                f"لم يتم {action_name} الطلب محليًا حتى تظل الحالة والحساب والنقاط متطابقة.\n"
-                f"راجع بيانات الطلب ثم حاول مرة ثانية.\n\n{error}"
-            )
-            QMessageBox.critical(self, title, message)
-            self.online_sync.poll()
-            return
-
-        try:
-            if action == "accept":
-                payment_status = context.get("payment_status")
-                conn = database.get_connection()
-                conn.execute(
-                    "UPDATE orders SET online_status='PREPARING', payment_status=?, "
-                    "shift_id=COALESCE(shift_id, ?) WHERE id=?",
-                    (payment_status, config.ACTIVE_SHIFT_ID, local_order_id),
-                )
-                conn.commit()
-                conn.close()
-
-                cashier_receipt = self.generate_receipt_text(local_order_id, "نسخة الكاشير")
-                kitchen_receipt = self.generate_receipt_text(local_order_id, "نسخة المطبخ")
-                if config.PRINTER_ONLINE:
-                    self._print_receipts_async(cashier_receipt, kitchen_receipt)
-                else:
-                    ReceiptSimDialog(local_order_id, cashier_receipt, kitchen_receipt, self).exec()
-            elif action == "reject" and local_order_id:
-                conn = database.get_connection()
-                conn.execute(
-                    "UPDATE orders SET status='CANCELLED', online_status='CANCELLED', closed_at=? WHERE id=?",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), local_order_id),
-                )
-                conn.commit()
-                conn.close()
-            elif action == "dispatch":
-                self._dispatch_order_locally(local_order_id, context.get("driver_id"))
-            elif action == "complete":
-                self._complete_order_locally(local_order_id, context.get("channel"))
-                self.ensure_active_shift()
-            elif action == "delete":
-                self._delete_order_locally(local_order_id)
-                self.ensure_active_shift()
-        except Exception as exc:
-            self._set_order_card_busy(local_order_id, None)
-            QMessageBox.critical(
-                self,
-                "تعذر إكمال التحديث المحلي",
-                "الموقع استقبل التحديث، لكن تعذر تحديث نسخة الكاشير محليًا. "
-                f"سيحاول البرنامج تصحيحها تلقائيًا.\n\n{exc}",
-            )
-            self.online_sync.poll()
-            return
-
-        self._schedule_pending_orders_refresh(0)
-        self.online_sync.poll()
-
-    def _finish_queued_online_action(self, action, context):
-        """Complete the local half only after Railway confirms a queued action."""
-        restored_context = dict(context or {})
-        restored_context.pop("queued_offline", None)
-        self._finish_online_order_action(str(action), restored_context, None)
-        self._record_notification(
-            "تمت المزامنة",
-            "نُفذت العملية المحفوظة على الموقع وتطابقت نسخة الكاشير.",
-            "success",
-        )
-
-    def _fail_queued_online_action(self, action, context, error):
-        local_order_id = dict(context or {}).get("local_order_id")
-        self._set_order_card_busy(local_order_id, None)
-        self._schedule_pending_orders_refresh(0)
-        self._record_notification(
-            "تعذر تنفيذ عملية محفوظة",
-            f"رفض السيرفر العملية لأنها لم تعد صالحة، وتم الاحتفاظ بالحالة الصحيحة. {error}",
-            "warning",
+            "تم حفظ العروض",
+            "تم حفظ العروض على هذا الجهاز.",
         )
 
     def _print_receipts_async(self, *receipts):
