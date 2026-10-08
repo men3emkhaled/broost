@@ -4,40 +4,33 @@
 #endif
 
 [Setup]
-AppId=Broost POS
-AppName=نظام الكاشير
-AppVersion=2.2
+AppId=BroostPOS.Offline
+AppName=BROOST Offline
+AppVersion=2.2.0
 AppPublisher=Men3em Khaled
-DefaultDirName={userappdata}\Programs\Cashier System
-DefaultGroupName=نظام الكاشير
+DefaultDirName={localappdata}\Programs\BROOST Offline
+DefaultGroupName=BROOST Offline
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-OutputDir=.
-OutputBaseFilename=CashierSystem_Setup
+OutputDir=release_offline
+OutputBaseFilename=Broost_Offline_Setup_2.2
 SetupIconFile=logo.ico
 UninstallDisplayIcon={app}\logo.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 VersionInfoCompany=Men3em Khaled
-VersionInfoDescription=نظام الكاشير
+VersionInfoDescription=BROOST Offline POS
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "{#ReleaseSourceDir}\*"; DestDir: "{app}"; Excludes: "broost_pos.db,backups\*,.last_backup_date,web_data\*"; Flags: recursesubdirs createallsubdirs
-
-[InstallDelete]
-; Old bundles could shadow Windows DLLs and prevent Qt from starting after an update.
-Type: files; Name: "{app}\_internal\icuuc.dll"
-Type: files; Name: "{app}\_internal\icuin.dll"
-Type: files; Name: "{app}\_internal\ucrtbase.dll"
-Type: files; Name: "{app}\_internal\api-ms-win-*.dll"
+Source: "{#ReleaseSourceDir}\*"; DestDir: "{app}"; Excludes: "broost_pos.db,backups\*,.last_backup_date"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\نظام الكاشير"; Filename: "{app}\CashierSystemGuard.exe"
-Name: "{userdesktop}\نظام الكاشير"; Filename: "{app}\CashierSystemGuard.exe"; WorkingDir: "{app}"
+Name: "{group}\BROOST Offline"; Filename: "{app}\CashierSystemGuard.exe"
+Name: "{userdesktop}\BROOST Offline"; Filename: "{app}\CashierSystemGuard.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\CashierSystemGuard.exe"; Description: "{cm:LaunchProgram,نظام الكاشير}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\CashierSystemGuard.exe"; Description: "{cm:LaunchProgram,BROOST Offline}"; Flags: nowait postinstall skipifsilent

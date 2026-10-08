@@ -1,0 +1,68 @@
+name: Build offline setup
+
+on:
+  push:
+    branches:
+      - offline-setup-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Run offline tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -q
+
+      - name: Build offline installer
+        shell: cmd
+        env:
+          BROOST_CLEAN_HOST_CONFIRMED: '1'
+        run: build_windows.bat
+
+      - name: Install and smoke test on clean runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $PWD 'release_offline\Broost_Offline_Setup_2.2.exe'
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer not found' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'BroostOfflineTest'
+          $setup = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir" -PassThru -Wait -WindowStyle Hidden
+          if ($setup.ExitCode -ne 0) { throw "Installer exit code $($setup.ExitCode)" }
+          $appPath = Join-Path $installDir 'BroostPOS.exe'
+          if (-not (Test-Path -LiteralPath $appPath)) { throw 'Installed POS not found' }
+          if (Test-Path -LiteralPath (Join-Path $installDir 'BroostWebServer.exe')) { throw 'Cloud server found in offline installer' }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $app = Start-Process -FilePath $appPath -WorkingDirectory $installDir -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 8
+            $app.Refresh()
+            if ($app.HasExited) { throw "Installed POS exited with code $($app.ExitCode)" }
+            $env:BROOST_TEST_DB = Join-Path $installDir 'broost_pos.db'
+            if (-not (Test-Path -LiteralPath $env:BROOST_TEST_DB)) { throw 'Fresh local database not created' }
+            python -c 'import os, sqlite3; c=sqlite3.connect(os.environ["BROOST_TEST_DB"]); assert c.execute("pragma quick_check").fetchone()[0] == "ok"; assert c.execute("select count(*) from orders").fetchone()[0] == 0; assert c.execute("select count(*) from customers").fetchone()[0] == 0; assert c.execute("select count(*) from menu_items").fetchone()[0] == 42'
+            if ($LASTEXITCODE -ne 0) { throw 'Fresh database check failed' }
+          } finally {
+            Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+          }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $installer | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BROOST-Offline-Setup-2.2
+          path: release_offline/Broost_Offline_Setup_2.2.exe
+          if-no-files-found: error
+          retention-days: 14
